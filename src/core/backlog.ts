@@ -70,7 +70,7 @@ import {
 import { attachSubtaskSummaries } from "../utils/task-subtasks.ts";
 import { formatValidTaskTypeValues, matchesTaskTypeFilter, resolveTaskTypeValue } from "../utils/task-type-config.ts";
 import { upsertTaskUpdatedDate } from "../utils/task-updated-date.ts";
-import { isTerminalStatus } from "../utils/terminal-status.ts";
+import { isTerminalStatus, validateTerminalStatusCompleteness } from "../utils/terminal-status.ts";
 import { migrateConfig, needsMigration } from "./config-migration.ts";
 import { ContentStore } from "./content-store.ts";
 import {
@@ -2141,6 +2141,8 @@ export class Core {
 			return await this.demoteTaskWithUpdates(task, input, autoCommit);
 		}
 
+		const oldStatus = task.status ?? "";
+
 		const { mutated } = await this.applyTaskUpdateInput(task, input, async (status) =>
 			this.requireCanonicalStatus(status),
 		);
@@ -2148,6 +2150,10 @@ export class Core {
 		if (!mutated) {
 			return task;
 		}
+
+		const config = await this.fs.loadConfig();
+		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+		validateTerminalStatusCompleteness(task, statuses, task.status ?? "", oldStatus);
 
 		await this.updateTask(task, autoCommit);
 		const refreshed = await this.fs.loadTask(taskId);
@@ -2229,6 +2235,10 @@ export class Core {
 		});
 
 		const canonicalStatus = await this.requireCanonicalStatus(targetStatus);
+
+		const config = await this.fs.loadConfig();
+		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+		validateTerminalStatusCompleteness(draft, statuses, canonicalStatus, "Draft");
 
 		const { promotedTask, savedPath } = await this.withCreateLock(async () => {
 			const newTaskId = await this.generateNextId(EntityType.Task, draft.parentTaskId);
@@ -2441,6 +2451,12 @@ export class Core {
 			next: nextTask,
 			defaultStep,
 		});
+
+		if ((movedTask.status ?? "") !== targetStatus) {
+			const config = await this.fs.loadConfig();
+			const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+			validateTerminalStatusCompleteness(movedTask, statuses, targetStatus, movedTask.status ?? "");
+		}
 
 		const updatedMoved: Task = {
 			...movedTask,
