@@ -37,6 +37,7 @@ If you can simplify the code, do it.
 - `bun run check .` - Run all Biome checks (format + lint)
 - `bun run build` - Build the CLI tool
 - `bun run cli` - Uses the CLI tool directly
+- `bun run build && ln -sf $(pwd)/dist/backlog $(which backlog)` - Build and link for local testing
 
 ### Testing
 
