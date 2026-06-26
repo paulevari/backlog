@@ -686,6 +686,7 @@ describe("MCP task tools (MVP)", () => {
 					notesAppend: ["Ensure CLI examples mirror MCP usage"],
 					acceptanceCriteriaSet: ["Plan documented"],
 					acceptanceCriteriaAdd: ["Agents can follow instructions end-to-end"],
+					definitionOfDoneAdd: ["Review complete"],
 				},
 			},
 		});

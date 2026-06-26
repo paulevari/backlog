@@ -79,8 +79,10 @@ describe("CLI --plain for task create/edit", () => {
 	});
 
 	it("prints plain details after task edit --plain", async () => {
-		// Create base task first (without plain)
-		await $`bun ${cliPath} task create "Edit Me" --desc "First"`.cwd(TEST_DIR).quiet();
+		// Create base task first (without plain) — include AC/DoD so status can change
+		await $`bun ${cliPath} task create "Edit Me" --desc "First" --ac "criterion" --dod "tests pass"`
+			.cwd(TEST_DIR)
+			.quiet();
 
 		const result = await $`bun ${cliPath} task edit 1 -s "In Progress" --plain`.cwd(TEST_DIR).quiet();
 

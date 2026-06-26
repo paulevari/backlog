@@ -31,6 +31,7 @@ import {
 } from "../utils/document-path.ts";
 import { openInEditor } from "../utils/editor.ts";
 import { generateNextDocId } from "../utils/id-generators.ts";
+import { validateInitialStatusReadiness } from "../utils/initial-status.ts";
 import {
 	createMilestoneFilterValueResolver,
 	normalizeMilestoneFilterValue,
@@ -2153,6 +2154,7 @@ export class Core {
 
 		const config = await this.fs.loadConfig();
 		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+		validateInitialStatusReadiness(task, statuses, task.status ?? "", oldStatus);
 		validateTerminalStatusCompleteness(task, statuses, task.status ?? "", oldStatus);
 
 		await this.updateTask(task, autoCommit);
@@ -2238,6 +2240,7 @@ export class Core {
 
 		const config = await this.fs.loadConfig();
 		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+		validateInitialStatusReadiness(draft, statuses, canonicalStatus, "Draft");
 		validateTerminalStatusCompleteness(draft, statuses, canonicalStatus, "Draft");
 
 		const { promotedTask, savedPath } = await this.withCreateLock(async () => {
@@ -2455,6 +2458,7 @@ export class Core {
 		if ((movedTask.status ?? "") !== targetStatus) {
 			const config = await this.fs.loadConfig();
 			const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+			validateInitialStatusReadiness(movedTask, statuses, targetStatus, movedTask.status ?? "");
 			validateTerminalStatusCompleteness(movedTask, statuses, targetStatus, movedTask.status ?? "");
 		}
 

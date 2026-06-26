@@ -247,11 +247,14 @@ describe("Core.reorderTask", () => {
 	});
 
 	it("updates status and ordinal when moving across columns", async () => {
-		await createTasks([
-			["task-1", "To Do", 1000],
-			["task-2", "In Progress", 1000],
-			["task-3", "In Progress", 2000],
-		]);
+		const taskWithAcDod = {
+			...buildTask("task-1", "To Do", 1000),
+			acceptanceCriteriaItems: [{ index: 1, text: "criterion", checked: false }],
+			definitionOfDoneItems: [{ index: 1, text: "tests pass", checked: false }],
+		};
+		await core.createTask(taskWithAcDod, false);
+		await core.createTask(buildTask("task-2", "In Progress", 1000), false);
+		await core.createTask(buildTask("task-3", "In Progress", 2000), false);
 
 		const result = await core.reorderTask({
 			taskId: "task-1",

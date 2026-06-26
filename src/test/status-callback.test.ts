@@ -123,10 +123,12 @@ onStatusChange: 'echo "$TASK_ID:$OLD_STATUS->$NEW_STATUS" > "${callbackOutputPat
 			const writtenConfig = await Bun.file(join(testDir, "backlog", "config.yml")).text();
 			expect(writtenConfig).toContain("onStatusChange");
 
-			// Create a task
+			// Create a task with AC/DoD so it can leave initial status
 			const { task } = await core.createTaskFromInput({
 				title: "Test Callback Task",
 				status: "To Do",
+				acceptanceCriteria: [{ text: "criterion", checked: false }],
+				definitionOfDoneAdd: ["tests pass"],
 			});
 
 			// Invalidate config cache to ensure fresh read
@@ -155,7 +157,7 @@ onStatusChange: 'echo "global" > "${callbackOutputPath}"'
 `;
 			await writeFile(join(testDir, "backlog", "config.yml"), configContent);
 
-			// Create a task with per-task callback
+			// Create a task with per-task callback and AC/DoD (checked for terminal validation)
 			const taskContent = `---
 id: task-1
 title: Task with custom callback
@@ -166,6 +168,14 @@ labels: []
 dependencies: []
 onStatusChange: 'echo "per-task:$NEW_STATUS" > "${callbackOutputPath}"'
 ---
+
+## Acceptance Criteria
+
+- [x] #1 criterion
+
+## Definition of Done
+
+- [x] #1 tests pass
 `;
 			await writeFile(join(testDir, "backlog", "tasks", "task-1 - Task with custom callback.md"), taskContent);
 
@@ -220,10 +230,12 @@ checkActiveBranches: false
 `;
 			await writeFile(join(testDir, "backlog", "config.yml"), configContent);
 
-			// Create a task
+			// Create a task with AC/DoD so it can leave initial status
 			const { task } = await core.createTaskFromInput({
 				title: "Test No Config Task",
 				status: "To Do",
+				acceptanceCriteria: [{ text: "criterion", checked: false }],
+				definitionOfDoneAdd: ["tests pass"],
 			});
 
 			// Update status - should not fail even without callback
@@ -246,11 +258,15 @@ onStatusChange: 'exit 1'
 `;
 			await writeFile(join(testDir, "backlog", "config.yml"), configContent);
 
-			// Create a task
+			// Create a task with AC/DoD (checked, so terminal validation also passes)
 			const { task } = await core.createTaskFromInput({
 				title: "Test Failing Callback Task",
 				status: "To Do",
+				acceptanceCriteria: [{ text: "criterion", checked: true }],
+				definitionOfDoneAdd: ["tests pass"],
 			});
+			// Check DoD items so terminal validation passes
+			await core.updateTaskFromInput(task.id, { checkDefinitionOfDone: [1] });
 
 			// Update status - should succeed even if callback fails
 			const result = await core.updateTaskFromInput(task.id, { status: "Done" });
@@ -272,10 +288,12 @@ onStatusChange: 'echo "$TASK_ID:$OLD_STATUS->$NEW_STATUS" >> "${callbackOutputPa
 `;
 			await writeFile(join(testDir, "backlog", "config.yml"), configContent);
 
-			// Create a task in "To Do"
+			// Create a task in "To Do" with AC/DoD so it can leave initial status
 			const { task } = await core.createTaskFromInput({
 				title: "Reorder Callback Test",
 				status: "To Do",
+				acceptanceCriteria: [{ text: "criterion", checked: false }],
+				definitionOfDoneAdd: ["tests pass"],
 			});
 
 			// Invalidate config cache

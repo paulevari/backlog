@@ -32,6 +32,8 @@ describe("CLI auto-plain behavior in non-TTY runs", () => {
 			labels: [],
 			dependencies: [],
 			description: "Seed task description",
+			acceptanceCriteriaItems: [{ index: 1, text: "criterion", checked: false }],
+			definitionOfDoneItems: [{ index: 1, text: "tests pass", checked: false }],
 		};
 		await core.createTask(seedTask, false);
 	});
