@@ -11,6 +11,7 @@ import { collectAvailableLabels } from "../utils/label-filter.ts";
 import { hasAnyPrefix } from "../utils/prefix-config.ts";
 import { applySharedTaskFilters, createTaskSearchIndex, type LabelMatchMode } from "../utils/task-search.ts";
 import { type TaskWatcherCallbacks, watchTasks } from "../utils/task-watcher.ts";
+import { viewAnnieBrowser } from "./annie-browser.ts";
 import { renderBoardTui } from "./board.ts";
 import { createLoadingScreen } from "./loading.ts";
 import { buildTaskViewerMilestoneFilterModel, viewTaskEnhanced } from "./task-viewer-with-search.ts";
@@ -508,6 +509,26 @@ export async function runUnifiedView(options: UnifiedViewOptions): Promise<void>
 			});
 		};
 
+		const showAnnieBrowser = async (): Promise<ViewResult> => {
+			return new Promise<ViewResult>((resolve) => {
+				let result: ViewResult = "exit";
+
+				const onTabPress = async () => {
+					result = "switch";
+				};
+
+				viewAnnieBrowser({
+					core: options.core,
+					onTabPress,
+				}).then(() => {
+					if (result === "exit") {
+						process.exit(0);
+					}
+					resolve(result);
+				});
+			});
+		};
+
 		// Main view loop
 		while (isRunning) {
 			// Show the current view and get the result
@@ -519,6 +540,9 @@ export async function runUnifiedView(options: UnifiedViewOptions): Promise<void>
 					break;
 				case "kanban":
 					result = await showKanbanView();
+					break;
+				case "annie-browser":
+					result = await showAnnieBrowser();
 					break;
 				default:
 					result = "exit";
@@ -536,7 +560,9 @@ export async function runUnifiedView(options: UnifiedViewOptions): Promise<void>
 						currentView = "kanban";
 						break;
 					case "kanban":
-						// Always go to task-list view when switching from board, keeping selected task highlighted
+						currentView = "annie-browser";
+						break;
+					case "annie-browser":
 						currentView = "task-list";
 						break;
 				}

@@ -27,6 +27,13 @@ export type TaskUpdateRequest = Omit<Partial<Task>, "milestone"> & {
 	commentAuthor?: string;
 };
 
+export interface AnnieTreeNode {
+	name: string;
+	path: string;
+	type: "file" | "directory";
+	children?: AnnieTreeNode[];
+}
+
 export interface InitializationStatus {
 	initialized: boolean;
 	projectPath: string;
@@ -565,6 +572,22 @@ export class ApiClient {
 		return this.fetchJson<
 			TaskStatistics & { statusCounts: Record<string, number>; priorityCounts: Record<string, number> }
 		>(`${API_BASE}/statistics`);
+	}
+
+	async fetchAnnieTree(): Promise<{ exists: boolean; tree: AnnieTreeNode | null }> {
+		return this.fetchJson(`${API_BASE}/annie/tree`);
+	}
+
+	async fetchAnnieFile(path: string): Promise<{ path: string; name: string; content: string; size: number }> {
+		return this.fetchJson(`${API_BASE}/annie/file?path=${encodeURIComponent(path)}`);
+	}
+
+	async updateAnnieFile(path: string, content: string): Promise<{ success: boolean }> {
+		return this.fetchJson(`${API_BASE}/annie/file?path=${encodeURIComponent(path)}`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ content }),
+		});
 	}
 
 	async checkStatus(): Promise<InitializationStatus> {

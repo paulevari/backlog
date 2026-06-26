@@ -7,6 +7,7 @@ import DecisionDetail from './components/DecisionDetail';
 import TaskList from './components/TaskList';
 import DraftsList from './components/DraftsList';
 import Settings from './components/Settings';
+import AnnieFileBrowser from './components/AnnieFileBrowser';
 import Statistics from './components/Statistics';
 import MilestonesPage from './components/MilestonesPage';
 import TaskDetailsModal from './components/TaskDetailsModal';
@@ -193,6 +194,7 @@ function AppContent() {
   
   // Initialization state
   const [isInitialized, setIsInitialized] = useState<boolean | null>(null);
+  const [annieExists, setAnnieExists] = useState(false);
   
   // Centralized data state
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -238,6 +240,7 @@ function AppContent() {
       try {
         const status = await apiClient.checkStatus();
         setIsInitialized(status.initialized);
+        setAnnieExists((status as { annieExists?: boolean }).annieExists ?? false);
       } catch (error) {
         // If we can't check status, assume not initialized
         console.error('Failed to check initialization status:', error);
@@ -654,6 +657,7 @@ function AppContent() {
                 isLoading={isLoading}
                 onRefreshData={refreshData}
                 duplicateRepairPlan={duplicateRepairPlan}
+                annieExists={annieExists}
               />
             }
           >
@@ -709,6 +713,8 @@ function AppContent() {
             <Route path="decisions/:id/:title" element={<DecisionDetail decisions={decisions} onRefreshData={refreshData} dateFormat={config?.dateFormat} />} />
             <Route path="statistics" element={<Statistics tasks={tasks} isLoading={isLoading} onEditTask={handleEditTask} projectName={projectName} dateFormat={config?.dateFormat} />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="annie" element={<AnnieFileBrowser />} />
+            <Route path="annie/*" element={<AnnieFileBrowser />} />
           </Route>
       </Routes>
 

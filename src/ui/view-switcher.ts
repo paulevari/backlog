@@ -6,7 +6,7 @@
 import type { Core } from "../core/backlog.ts";
 import type { Task } from "../types/index.ts";
 
-export type ViewType = "task-list" | "task-detail" | "kanban";
+export type ViewType = "task-list" | "task-detail" | "kanban" | "annie-browser";
 
 export interface ViewState {
 	type: ViewType;

@@ -18,6 +18,8 @@ import {
 	type Task,
 	type TaskUpdateInput,
 } from "../types/index.ts";
+import { readAnnieFile, readAnnieTree, writeAnnieFile } from "../utils/annie-fs.ts";
+import { watchConfig } from "../utils/config-watcher.ts";
 import { resolveMilestoneInputForStorage } from "../utils/milestone-storage.ts";
 import { formatValidPriorityValues, resolvePriorityValue } from "../utils/priority-config.ts";
 import { formatValidStatuses, getCanonicalStatuses, getValidStatuses } from "../utils/status.ts";
@@ -310,6 +312,8 @@ export class BacklogServer {
 					"/decisions/*": spaIndexHtml,
 					"/statistics": spaIndexHtml,
 					"/settings": spaIndexHtml,
+					"/annie": spaIndexHtml,
+					"/annie/*": spaIndexHtml,
 
 					// API Routes using Bun's native route syntax
 					"/api/tasks": {
@@ -407,6 +411,25 @@ export class BacklogServer {
 					},
 					"/api/search": {
 						GET: async (req: Request) => await this.handleSearch(req),
+					},
+					"/api/annie/tree": {
+						GET: async () => await this.handleAnnieTree(),
+					},
+					"/api/annie/file": {
+						GET: async (req: Request) => await this.handleAnnieGetFile(req),
+						PUT: async (req: Request) => await this.handleAnnieUpdateFile(req),
+					},
+					"/sequences": {
+						GET: async () => await this.handleGetSequences(),
+					},
+					"/sequences/move": {
+						POST: async (req: Request) => await this.handleMoveSequence(req),
+					},
+					"/api/sequences": {
+						GET: async () => await this.handleGetSequences(),
+					},
+					"/api/sequences/move": {
+						POST: async (req: Request) => await this.handleMoveSequence(req),
 					},
 					// Serve files placed under backlog/assets at /assets/<relative-path>
 					"/assets/*": {
@@ -1793,10 +1816,58 @@ export class BacklogServer {
 		}
 	}
 
+	private async handleAnnieTree(): Promise<Response> {
+		try {
+			const result = await readAnnieTree(this.core.filesystem.rootDir);
+			return Response.json(result);
+		} catch {
+			return Response.json({ error: "Failed to read .annie directory" }, { status: 500 });
+		}
+	}
+
+	private async handleAnnieGetFile(req: Request): Promise<Response> {
+		try {
+			const url = new URL(req.url);
+			const filePath = url.searchParams.get("path");
+			if (!filePath) {
+				return Response.json({ error: "Missing path parameter" }, { status: 400 });
+			}
+			const result = await readAnnieFile(this.core.filesystem.rootDir, filePath);
+			return Response.json(result);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			if (message.includes("not found")) {
+				return Response.json({ error: message }, { status: 404 });
+			}
+			return Response.json({ error: message }, { status: 400 });
+		}
+	}
+
+	private async handleAnnieUpdateFile(req: Request): Promise<Response> {
+		try {
+			const url = new URL(req.url);
+			const filePath = url.searchParams.get("path");
+			if (!filePath) {
+				return Response.json({ error: "Missing path parameter" }, { status: 400 });
+			}
+			const body = await req.json();
+			if (typeof body.content !== "string") {
+				return Response.json({ error: "Missing content in request body" }, { status: 400 });
+			}
+			await writeAnnieFile(this.core.filesystem.rootDir, filePath, body.content);
+			return Response.json({ success: true });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return Response.json({ error: message }, { status: 400 });
+		}
+	}
+
 	private async handleGetStatus(): Promise<Response> {
 		try {
+			const { existsSync } = await import("node:fs");
 			const config = await this.core.filesystem.loadConfig();
 			const backlogResolution = this.core.filesystem.resolveBacklogDirectoryInfo();
+			const annieExists = existsSync(join(this.core.filesystem.rootDir, ".annie"));
 			return Response.json({
 				initialized: !!config,
 				projectPath: this.core.filesystem.rootDir,
@@ -1804,6 +1875,7 @@ export class BacklogServer {
 				backlogDirectorySource: backlogResolution.source,
 				configLocation: backlogResolution.configSource,
 				rootConfigPath: backlogResolution.rootConfigPath,
+				annieExists,
 			});
 		} catch (error) {
 			console.error("Error getting status:", error);
@@ -1814,6 +1886,7 @@ export class BacklogServer {
 				backlogDirectorySource: null,
 				configLocation: null,
 				rootConfigPath: null,
+				annieExists: false,
 			});
 		}
 	}

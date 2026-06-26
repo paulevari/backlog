@@ -16,6 +16,7 @@ interface LayoutProps {
 	isLoading: boolean;
 	onRefreshData: () => Promise<void>;
 	duplicateRepairPlan?: DuplicateRepairPlan | null;
+	annieExists?: boolean;
 }
 
 export default function Layout({
@@ -28,16 +29,18 @@ export default function Layout({
 	isLoading,
 	onRefreshData,
 	duplicateRepairPlan = null,
+	annieExists,
 }: LayoutProps) {
 	return (
 		<div className="h-screen bg-gray-50 dark:bg-gray-900 flex overflow-hidden transition-colors duration-200">
 			<HealthIndicator />
-			<SideNavigation 
+			<SideNavigation
 				tasks={tasks}
 				docs={docs}
 				decisions={decisions}
 				isLoading={isLoading}
 				onRefreshData={onRefreshData}
+				annieExists={annieExists}
 			/>
 			<div className="flex-1 flex flex-col min-h-0 min-w-0">
 				<Navigation projectName={projectName} />
