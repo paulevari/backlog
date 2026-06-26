@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import type { ListInterface } from "neo-neo-bblessed";
 import { box, list, scrollabletext } from "neo-neo-bblessed";
@@ -5,6 +6,11 @@ import type { Core } from "../core/backlog.ts";
 import type { AnnieTreeNode } from "../utils/annie-fs.ts";
 import { readAnnieFile, readAnnieTree } from "../utils/annie-fs.ts";
 import { addScrollKeys, createScreen } from "./tui.ts";
+
+function openInBrowser(filePath: string): void {
+	const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+	spawn(cmd, [filePath], { detached: true, stdio: "ignore" }).unref();
+}
 
 interface FlatEntry {
 	node: AnnieTreeNode;
@@ -75,7 +81,7 @@ export async function viewAnnieBrowser(options: { core: Core; onTabPress?: () =>
 		height: 1,
 		tags: true,
 		content:
-			" {cyan-fg}[Tab]{/} View | {cyan-fg}[↑↓]{/} Nav | {cyan-fg}[Enter]{/} Expand/Select | {cyan-fg}[e]{/} Edit | {cyan-fg}[q]{/} Quit",
+			" {cyan-fg}[Tab]{/} View | {cyan-fg}[↑↓]{/} Nav | {cyan-fg}[Enter]{/} Expand/Select | {cyan-fg}[e]{/} Edit | {cyan-fg}[o]{/} Open | {cyan-fg}[q]{/} Quit",
 	});
 
 	if (!exists || !tree?.children?.length) {
@@ -316,6 +322,13 @@ export async function viewAnnieBrowser(options: { core: Core; onTabPress?: () =>
 		if (refreshedEntry) {
 			void showFileContent(refreshedEntry);
 		}
+	});
+
+	screen.key(["o", "O"], () => {
+		const entry = getSelectedEntry();
+		if (!entry || entry.node.type !== "file") return;
+		const filePath = join(cwd, ".annie", entry.node.path);
+		openInBrowser(filePath);
 	});
 
 	if (options.onTabPress) {

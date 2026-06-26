@@ -419,6 +419,9 @@ export class BacklogServer {
 						GET: async (req: Request) => await this.handleAnnieGetFile(req),
 						PUT: async (req: Request) => await this.handleAnnieUpdateFile(req),
 					},
+					"/api/annie/raw": {
+						GET: async (req: Request) => await this.handleAnnieRawFile(req),
+					},
 					"/sequences": {
 						GET: async () => await this.handleGetSequences(),
 					},
@@ -1859,6 +1862,42 @@ export class BacklogServer {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return Response.json({ error: message }, { status: 400 });
+		}
+	}
+
+	private async handleAnnieRawFile(req: Request): Promise<Response> {
+		try {
+			const url = new URL(req.url);
+			const filePath = url.searchParams.get("path");
+			if (!filePath) {
+				return Response.json({ error: "Missing path parameter" }, { status: 400 });
+			}
+			const annieDir = join(this.core.filesystem.rootDir, ".annie");
+			const { validateAnniePath } = await import("../utils/annie-fs.ts");
+			const resolved = validateAnniePath(filePath, annieDir);
+			const file = Bun.file(resolved);
+			if (!(await file.exists())) {
+				return new Response("Not Found", { status: 404 });
+			}
+			const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+			const mimeMap: Record<string, string> = {
+				html: "text/html",
+				htm: "text/html",
+				md: "text/markdown",
+				txt: "text/plain",
+				json: "application/json",
+				yml: "text/yaml",
+				yaml: "text/yaml",
+				css: "text/css",
+				js: "application/javascript",
+				svg: "image/svg+xml",
+			};
+			return new Response(file, {
+				headers: { "Content-Type": mimeMap[ext] ?? "text/plain" },
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return new Response(message, { status: 400 });
 		}
 	}
 

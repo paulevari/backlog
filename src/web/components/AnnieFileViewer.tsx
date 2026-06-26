@@ -36,7 +36,12 @@ export default function AnnieFileViewer({ filePath }: AnnieFileViewerProps) {
 	}, [filePath]);
 
 	const isMarkdown = filePath.endsWith(".md");
+	const isHtml = filePath.endsWith(".html") || filePath.endsWith(".htm");
 	const hasChanges = content !== originalContent;
+
+	const handleOpenInBrowser = () => {
+		window.open(`/api/annie/raw?path=${encodeURIComponent(filePath)}`, "_blank");
+	};
 
 	const handleSave = async () => {
 		setIsSaving(true);
@@ -108,13 +113,24 @@ export default function AnnieFileViewer({ filePath }: AnnieFileViewerProps) {
 							</button>
 						</>
 					) : (
-						<button
-							type="button"
-							onClick={() => setIsEditing(true)}
-							className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
-						>
-							Edit
-						</button>
+						<>
+							{isHtml && (
+								<button
+									type="button"
+									onClick={handleOpenInBrowser}
+									className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+								>
+									Open in Browser
+								</button>
+							)}
+							<button
+								type="button"
+								onClick={() => setIsEditing(true)}
+								className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors"
+							>
+								Edit
+							</button>
+						</>
 					)}
 				</div>
 			</div>
