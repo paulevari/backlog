@@ -76,21 +76,23 @@ export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOption
 	const now = options.now ?? (() => new Date().toISOString());
 	let disabled = false;
 
-	const connectionPromise = connect({
-		servers: url,
-		name: "backlog.md-task-lifecycle",
-		timeout: 500,
-		reconnect: false,
-		maxReconnectAttempts: 0,
-	})
-		.then((connection) => connection)
-		.catch((error) => {
+	const openConnection = async (): Promise<BellerophonConnection | null> => {
+		try {
+			return await connect({
+				servers: url,
+				name: "backlog.md-task-lifecycle",
+				timeout: 500,
+				reconnect: false,
+				maxReconnectAttempts: 0,
+			});
+		} catch (error) {
 			disabled = true;
 			if (process.env.DEBUG) {
 				console.warn(`Bellerophon task lifecycle notifications disabled: ${String(error)}`);
 			}
 			return null;
-		});
+		}
+	};
 
 	return {
 		async notify(event: TaskLifecycleEvent): Promise<void> {
@@ -98,7 +100,7 @@ export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOption
 				return;
 			}
 
-			const connection = await connectionPromise;
+			const connection = await openConnection();
 			if (!connection) {
 				return;
 			}
@@ -121,6 +123,8 @@ export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOption
 				if (process.env.DEBUG) {
 					console.warn(`Bellerophon task lifecycle publish failed; notifications disabled: ${String(error)}`);
 				}
+			} finally {
+				await connection.close?.().catch(() => undefined);
 			}
 		},
 	};

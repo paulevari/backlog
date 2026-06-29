@@ -103,6 +103,39 @@ describe("task lifecycle notifications", () => {
 		expect(published).toHaveLength(0);
 	});
 
+	it("opens connections only for publish attempts and closes them after flushing", async () => {
+		const published: Array<{ subject: string; payload: Uint8Array | string }> = [];
+		let connectCalls = 0;
+		let closeCalls = 0;
+		const notifier = createTaskLifecycleNotifier({
+			connect: async () => {
+				connectCalls += 1;
+				return {
+					publish: (subject: string, payload?: Uint8Array | string) => {
+						if (payload !== undefined) {
+							published.push({ subject, payload });
+						}
+					},
+					flush: async () => undefined,
+					close: async () => {
+						closeCalls += 1;
+					},
+				};
+			},
+			now: () => "2026-06-29T12:00:00.000Z",
+			projectRoot: testDir,
+		});
+
+		expect(connectCalls).toBe(0);
+
+		await notifier.notify({ action: "created", task: sampleTask(), projectRoot: testDir });
+		await notifier.notify({ action: "archived", task: sampleTask(), projectRoot: testDir });
+
+		expect(connectCalls).toBe(2);
+		expect(published).toHaveLength(2);
+		expect(closeCalls).toBe(2);
+	});
+
 	it("publishes structured JSON payloads when connected", async () => {
 		const published: Array<{ subject: string; payload: Uint8Array | string }> = [];
 		const notifier = createTaskLifecycleNotifier({
