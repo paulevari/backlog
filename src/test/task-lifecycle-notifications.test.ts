@@ -134,6 +134,7 @@ describe("task lifecycle notifications", () => {
 			version: 1,
 			action: "status_changed",
 			previousStatus: "To Do",
+			newState: "Done",
 			projectRoot: testDir,
 			timestamp: "2026-06-29T12:00:00.000Z",
 			task: { id: "task-1", title: "Lifecycle Task", status: "Done" },

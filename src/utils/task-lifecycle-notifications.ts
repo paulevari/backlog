@@ -32,6 +32,7 @@ export interface TaskLifecycleEvent {
 export interface TaskLifecycleNotificationPayload extends TaskLifecycleEvent {
 	version: 1;
 	timestamp: string;
+	newState: string;
 }
 
 export interface TaskLifecycleNotifier {
@@ -107,6 +108,7 @@ export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOption
 				timestamp: event.timestamp ?? now(),
 				projectRoot: event.projectRoot || options.projectRoot || process.cwd(),
 				action: event.action,
+				newState: event.task.status,
 				task: event.task,
 				...(event.previousStatus !== undefined && { previousStatus: event.previousStatus }),
 			};
