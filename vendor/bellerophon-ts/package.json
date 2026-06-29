@@ -1,0 +1,19 @@
+{
+  "name": "@opencode-ai/bellerophon",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "./index.ts",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.ts"
+    },
+    "./bacl": {
+      "types": "./bacl.d.ts",
+      "default": "./bacl.ts"
+    }
+  },
+  "dependencies": {}
+}

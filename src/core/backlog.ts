@@ -61,6 +61,11 @@ import {
 } from "../utils/task-builders.ts";
 import { resolveTaskById } from "../utils/task-id.ts";
 import {
+	getTaskLifecycleNotifier,
+	type TaskLifecycleEventAction,
+	type TaskLifecycleNotifier,
+} from "../utils/task-lifecycle-notifications.ts";
+import {
 	AmbiguousTaskIdError,
 	getDraftPath,
 	getTaskFilename,
@@ -271,13 +276,15 @@ export class Core {
 	private activeBranchFingerprint: string | null = null;
 	private activeBranchFingerprintPromise: Promise<string> | null = null;
 	private activeBranchRefreshPromise: Promise<void> | null = null;
+	private readonly taskNotifier: TaskLifecycleNotifier;
 
-	constructor(projectRoot: string, options?: { enableWatchers?: boolean }) {
+	constructor(projectRoot: string, options?: { enableWatchers?: boolean; taskNotifier?: TaskLifecycleNotifier }) {
 		this.fs = new FileSystem(projectRoot);
 		this.git = new GitOperations(projectRoot, null, () => this.fs.loadConfig());
 		// Disable watchers by default for CLI commands (non-interactive)
 		// Interactive modes (TUI, browser, MCP) should explicitly pass enableWatchers: true
 		this.enableWatchers = options?.enableWatchers ?? false;
+		this.taskNotifier = options?.taskNotifier ?? getTaskLifecycleNotifier();
 		// Note: Config is loaded lazily when needed since constructor can't be async
 	}
 
@@ -1289,6 +1296,10 @@ export class Core {
 			}
 		}
 
+		if (!isDraft && savedTask) {
+			await this.publishTaskLifecycleEvent("created", savedTask);
+		}
+
 		return savedTask;
 	}
 
@@ -1541,8 +1552,9 @@ export class Core {
 
 		await this.fs.saveTask(task);
 		// Keep any in-process ContentStore in sync for immediate UI/search freshness.
+		let savedTask: Task | null = null;
 		if (this.contentStore) {
-			const savedTask = await this.fs.loadTask(task.id);
+			savedTask = await this.fs.loadTask(task.id);
 			if (savedTask) {
 				this.contentStore.upsertTask(savedTask);
 			}
@@ -1559,6 +1571,26 @@ export class Core {
 		if (statusChanged) {
 			await this.executeStatusChangeCallback(task, oldStatus, newStatus);
 		}
+
+		savedTask ??= await this.fs.loadTask(task.id);
+		if (savedTask) {
+			await this.publishTaskLifecycleEvent(statusChanged ? "status_changed" : "updated", savedTask, {
+				previousStatus: statusChanged ? oldStatus : undefined,
+			});
+		}
+	}
+
+	private async publishTaskLifecycleEvent(
+		action: TaskLifecycleEventAction,
+		task: Task,
+		options?: { previousStatus?: string },
+	): Promise<void> {
+		await this.taskNotifier.notify({
+			action,
+			task,
+			projectRoot: this.fs.rootDir,
+			...(options?.previousStatus !== undefined && { previousStatus: options.previousStatus }),
+		});
 	}
 
 	private async applyTaskUpdateInput(
@@ -2545,6 +2577,8 @@ export class Core {
 			await this.git.commitChanges(`backlog: Archive task ${normalizedTaskId}`, repoRoot);
 		}
 
+		await this.publishTaskLifecycleEvent("archived", taskToArchive);
+
 		return true;
 	}
 
@@ -2635,6 +2669,10 @@ export class Core {
 			// Stage the file move for proper Git tracking
 			const repoRoot = await this.git.stageFileMove(fromPath, toPath);
 			await this.git.commitChanges(`backlog: Complete task ${normalizeTaskId(taskId)}`, repoRoot);
+		}
+
+		if (success) {
+			await this.publishTaskLifecycleEvent("completed", taskToComplete);
 		}
 
 		return success;
