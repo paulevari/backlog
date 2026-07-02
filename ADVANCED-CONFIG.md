@@ -25,6 +25,7 @@ Running `backlog config` with no arguments launches the interactive advanced wiz
 | `definition_of_done` | Default DoD checklist items for new tasks | `(not set)` |
 | `statuses`        | Board columns      | `[To Do, In Progress, Done]`  |
 | `priorities`      | Ordered task priority labels | `[High, Medium, Low]` |
+| `planning_statuses` | Statuses that may be entered before task-level AC/DoD exists | `[]` |
 | `dateFormat`      | Display-only date format | `yyyy-mm-dd`            |
 | `includeDatetimeInDates` | Add time to new dates | `true`              |
 | `defaultEditor`   | Editor for 'E' key | Platform default (nano/notepad) |
@@ -53,6 +54,8 @@ Running `backlog config` with no arguments launches the interactive advanced wiz
 > **Status Change Callbacks**: Set `onStatusChange` to run a shell command whenever a task's status changes. Available variables: `$TASK_ID`, `$OLD_STATUS`, `$NEW_STATUS`, `$TASK_TITLE`. Per-task override via `onStatusChange` in task frontmatter. Example: `'if [ "$NEW_STATUS" = "In Progress" ]; then claude "Task $TASK_ID ($TASK_TITLE) has been assigned to you. Please implement it." & fi'`
 
 > **Priority Values**: Set `priorities` to an ordered list of labels such as `["Very High", "High", "Medium", "Low", "Very Low"]`. The first value sorts highest. CLI, MCP, and Web inputs accept configured values case-insensitively and store normalized lowercase values in task frontmatter.
+
+> **Planning Statuses**: Set `planning_statuses` when your workflow has a pre-work column such as `Planning` or `Refinement`. Tasks may move from the first status into these statuses before task-level Acceptance Criteria and Definition of Done exist, but moving from any pre-work status into execution statuses still requires both sections to be defined.
 
 > **Date/Time Support**: Backlog.md now supports datetime precision for all dates. New items automatically include time (YYYY-MM-DD HH:mm format in UTC), while existing date-only entries remain unchanged for backward compatibility. Use the migration script `bun src/scripts/migrate-dates.ts` to optionally add time to existing items.
 

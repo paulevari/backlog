@@ -268,6 +268,30 @@ describe("Config commands", () => {
 		expect(reloadedConfig?.defaultEditor).toBe("nano");
 	});
 
+	it("should save and load planningStatuses config", async () => {
+		const config = await core.filesystem.loadConfig();
+		expect(config).toBeTruthy();
+		expect(config?.planningStatuses).toBeUndefined();
+
+		if (config) {
+			config.planningStatuses = ["Planning", "Refinement"];
+			await core.filesystem.saveConfig(config);
+		}
+
+		const reloadedConfig = await core.filesystem.loadConfig();
+		expect(reloadedConfig).toBeTruthy();
+		expect(reloadedConfig?.planningStatuses).toEqual(["Planning", "Refinement"]);
+
+		const configContent = await Bun.file(join(TEST_DIR, "backlog", "config.yml")).text();
+		expect(configContent).toContain('planning_statuses: ["Planning", "Refinement"]');
+
+		const getOutput = await $`bun ${CLI_PATH} config get planningStatuses`.cwd(TEST_DIR).text();
+		expect(getOutput.trim()).toBe("Planning, Refinement");
+
+		const listOutput = await $`bun ${CLI_PATH} config list`.cwd(TEST_DIR).text();
+		expect(listOutput).toContain("planningStatuses: [Planning, Refinement]");
+	});
+
 	it("should handle config with and without defaultEditor", async () => {
 		// Initially undefined
 		let config = await core.filesystem.loadConfig();

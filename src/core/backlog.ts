@@ -2186,7 +2186,7 @@ export class Core {
 
 		const config = await this.fs.loadConfig();
 		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
-		validateInitialStatusReadiness(task, statuses, task.status ?? "", oldStatus);
+		validateInitialStatusReadiness(task, statuses, task.status ?? "", oldStatus, config?.planningStatuses ?? []);
 		validateTerminalStatusCompleteness(task, statuses, task.status ?? "", oldStatus);
 
 		await this.updateTask(task, autoCommit);
@@ -2272,7 +2272,7 @@ export class Core {
 
 		const config = await this.fs.loadConfig();
 		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
-		validateInitialStatusReadiness(draft, statuses, canonicalStatus, "Draft");
+		validateInitialStatusReadiness(draft, statuses, canonicalStatus, "Draft", config?.planningStatuses ?? []);
 		validateTerminalStatusCompleteness(draft, statuses, canonicalStatus, "Draft");
 
 		const { promotedTask, savedPath } = await this.withCreateLock(async () => {
@@ -2490,7 +2490,13 @@ export class Core {
 		if ((movedTask.status ?? "") !== targetStatus) {
 			const config = await this.fs.loadConfig();
 			const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
-			validateInitialStatusReadiness(movedTask, statuses, targetStatus, movedTask.status ?? "");
+			validateInitialStatusReadiness(
+				movedTask,
+				statuses,
+				targetStatus,
+				movedTask.status ?? "",
+				config?.planningStatuses ?? [],
+			);
 			validateTerminalStatusCompleteness(movedTask, statuses, targetStatus, movedTask.status ?? "");
 		}
 

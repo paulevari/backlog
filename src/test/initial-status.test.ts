@@ -82,6 +82,32 @@ describe("validateInitialStatusReadiness", () => {
 		expect(() => validateInitialStatusReadiness({}, STATUSES, "To Do", "To Do")).not.toThrow();
 	});
 
+	it("passes when moving from initial status to configured planning status without AC or DoD", () => {
+		expect(() => validateInitialStatusReadiness({}, STATUSES, "Planning", "To Do", ["Planning"])).not.toThrow();
+	});
+
+	it("throws when moving from configured planning status to execution status without AC or DoD", () => {
+		expect(() => validateInitialStatusReadiness({}, STATUSES, "In Progress", "Planning", ["Planning"])).toThrow(
+			/Planning.*Acceptance Criteria and Definition of Done/,
+		);
+	});
+
+	it("passes when moving from configured planning status with AC and DoD defined", () => {
+		const task = {
+			acceptanceCriteriaItems: makeAC([{ text: "feature works" }]),
+			definitionOfDoneItems: makeAC([{ text: "tests pass" }]),
+		};
+		expect(() => validateInitialStatusReadiness(task, STATUSES, "In Progress", "Planning", ["Planning"])).not.toThrow();
+	});
+
+	it("passes when moving back from configured planning status to initial status without AC or DoD", () => {
+		expect(() => validateInitialStatusReadiness({}, STATUSES, "To Do", "Planning", ["Planning"])).not.toThrow();
+	});
+
+	it("passes when moving back from execution status to configured planning status without AC or DoD", () => {
+		expect(() => validateInitialStatusReadiness({}, STATUSES, "Planning", "In Progress", ["Planning"])).not.toThrow();
+	});
+
 	it("passes when demoting to Draft", () => {
 		expect(() => validateInitialStatusReadiness({}, STATUSES, "Draft", "To Do")).not.toThrow();
 	});

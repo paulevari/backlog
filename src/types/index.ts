@@ -300,6 +300,7 @@ export interface BacklogConfig {
 	defaultAssignee?: string;
 	defaultReporter?: string;
 	statuses: string[];
+	planningStatuses?: string[];
 	labels: string[];
 	/** Allowed task types. Defaults to DEFAULT_TASK_TYPES when not configured. */
 	types?: string[];

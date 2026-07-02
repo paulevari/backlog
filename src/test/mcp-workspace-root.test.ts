@@ -237,11 +237,15 @@ describe("MCP workspace root resolution", () => {
 		}
 	});
 
-	it("writes to the active git worktree, not the main checkout (#558)", async () => {
+	// Deliberate divergence from upstream #558: upstream writes to the active
+	// worktree's own backlog copy. Here task state is shared global state — a
+	// linked worktree's backlog snapshot diverges from the main checkout, so
+	// all reads and writes are redirected to the main checkout.
+	it("writes to the main checkout when the client opens a linked worktree", async () => {
 		TEST_DIR = createUniqueTestDir("mcp-workspace");
 		const mainRepo = join(TEST_DIR, "main-repo");
 		await createProject(mainRepo, "Main Repo");
-		await $`git add -A`.cwd(mainRepo).nothrow().quiet();
+		await $`git add -A -f`.cwd(mainRepo).nothrow().quiet();
 		await $`git commit -m "init backlog" --no-verify`.cwd(mainRepo).nothrow().quiet();
 
 		const worktree = join(TEST_DIR, "worktrees", "feature");
@@ -258,9 +262,8 @@ describe("MCP workspace root resolution", () => {
 				arguments: { title: "Worktree task" },
 			});
 
-			expect(server.filesystem.rootDir).toBe(worktree);
-			expect(await listTaskFiles(worktree)).toHaveLength(1);
-			expect(await listTaskFiles(mainRepo)).toHaveLength(0);
+			expect(server.filesystem.rootDir).toBe(mainRepo);
+			expect(await listTaskFiles(mainRepo)).toHaveLength(1);
 		} finally {
 			await client.close();
 			await server.stop();

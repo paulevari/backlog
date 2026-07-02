@@ -177,4 +177,48 @@ describe("findBacklogRoot", () => {
 		const result = await findBacklogRoot(nestedStart);
 		expect(result).toBe(testDir);
 	});
+
+	describe("linked git worktrees", () => {
+		let mainDir: string;
+		let worktreeDir: string;
+
+		beforeEach(async () => {
+			mainDir = join(testDir, "main");
+			worktreeDir = join(testDir, "wt");
+			await mkdir(join(mainDir, "backlog", "tasks"), { recursive: true });
+			await writeFile(join(mainDir, "backlog", "config.yml"), "project_name: Test\n");
+			await $`git init`.cwd(mainDir).quiet();
+			// -f: a global gitignore may exclude backlog/ outside real projects
+			await $`git add -f .`.cwd(mainDir).quiet();
+			await $`git -c user.email=test@test -c user.name=test commit -m init`.cwd(mainDir).quiet();
+			await $`git worktree add ${worktreeDir} -b test-branch`.cwd(mainDir).quiet();
+		});
+
+		it("should resolve to the main checkout when starting inside a linked worktree", async () => {
+			const result = await findBacklogRoot(worktreeDir);
+			expect(result).toBe(mainDir);
+		});
+
+		it("should resolve to the main checkout from a subfolder of a linked worktree", async () => {
+			const subfolder = join(worktreeDir, "src", "components");
+			await mkdir(subfolder, { recursive: true });
+
+			const result = await findBacklogRoot(subfolder);
+			expect(result).toBe(mainDir);
+		});
+
+		it("should keep resolving to the main checkout when starting inside it", async () => {
+			const result = await findBacklogRoot(mainDir);
+			expect(result).toBe(mainDir);
+		});
+
+		it("should stay on the worktree root when the main checkout has no backlog setup", async () => {
+			// Simulate a worktree whose main checkout lost its backlog dir: the
+			// redirect must fail open to the root that was actually found.
+			await rm(join(mainDir, "backlog"), { recursive: true, force: true });
+
+			const result = await findBacklogRoot(worktreeDir);
+			expect(result).toBe(worktreeDir);
+		});
+	});
 });

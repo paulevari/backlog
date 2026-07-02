@@ -1517,6 +1517,15 @@ ${description || `Milestone: ${title}`}`,
 					}
 					break;
 				}
+				case "planning_statuses":
+					if (value.startsWith("[") && value.endsWith("]")) {
+						const arrayContent = value.slice(1, -1);
+						config.planningStatuses = arrayContent
+							.split(",")
+							.map((item) => item.trim().replace(/['"]/g, ""))
+							.filter(Boolean);
+					}
+					break;
 				case "definition_of_done":
 					if (parsedDefinitionOfDone !== undefined) {
 						config.definitionOfDone = parsedDefinitionOfDone;
@@ -1582,6 +1591,7 @@ ${description || `Milestone: ${title}`}`,
 			defaultAssignee: config.defaultAssignee,
 			defaultReporter: config.defaultReporter,
 			statuses: config.statuses || [...DEFAULT_STATUSES],
+			planningStatuses: config.planningStatuses,
 			labels: config.labels || [],
 			types: config.types,
 			priorities: config.priorities,
@@ -1614,6 +1624,9 @@ ${description || `Milestone: ${title}`}`,
 			...(config.defaultReporter ? [`default_reporter: "${config.defaultReporter}"`] : []),
 			...(config.defaultStatus ? [`default_status: "${config.defaultStatus}"`] : []),
 			`statuses: [${config.statuses.map((s) => `"${s}"`).join(", ")}]`,
+			...(config.planningStatuses?.length
+				? [`planning_statuses: [${config.planningStatuses.map((s) => `"${s}"`).join(", ")}]`]
+				: []),
 			`labels: [${config.labels.map((l) => `"${l}"`).join(", ")}]`,
 			...(config.types && config.types.length > 0 ? [`types: [${config.types.map((t) => `"${t}"`).join(", ")}]`] : []),
 			...(config.priorities && config.priorities.length > 0

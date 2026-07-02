@@ -102,6 +102,7 @@ const CONFIG_GET_KEYS = [
 	"projectName",
 	"defaultStatus",
 	"statuses",
+	"planningStatuses",
 	"labels",
 	"priorities",
 	"types",
@@ -4384,6 +4385,9 @@ addHelpSchema(configCmd.command("get <key>"), {
 				case "statuses":
 					console.log(config.statuses.join(", "));
 					break;
+				case "planningStatuses":
+					console.log((config.planningStatuses ?? []).join(", "));
+					break;
 				case "labels":
 					console.log(config.labels.join(", "));
 					break;
@@ -4623,6 +4627,7 @@ addHelpSchema(configCmd.command("set <key> <value>"), {
 					break;
 				}
 				case "statuses":
+				case "planningStatuses":
 				case "labels":
 				case "types":
 				case "priorities":
@@ -4692,6 +4697,7 @@ addHelpSchema(configCmd.command("list"), {
 			console.log(`  defaultEditor: ${config.defaultEditor || "(not set)"}`);
 			console.log(`  defaultStatus: ${config.defaultStatus || "(not set)"}`);
 			console.log(`  statuses: [${config.statuses.join(", ")}]`);
+			console.log(`  planningStatuses: [${(config.planningStatuses ?? []).join(", ")}]`);
 			console.log(`  labels: [${config.labels.join(", ")}]`);
 			console.log(
 				`  priorities: [${getPriorityOptions(config)

@@ -22,6 +22,7 @@ import {
 import { Core } from "../core/backlog.ts";
 import { getPackageName } from "../utils/app-info.ts";
 import { resolveBacklogDirectory } from "../utils/backlog-directory.ts";
+import { redirectLinkedWorktreeRoot } from "../utils/find-backlog-root.ts";
 import { getVersion } from "../utils/version.ts";
 import { registerInitRequiredResource } from "./resources/init-required/index.ts";
 import { registerWorkflowResources } from "./resources/workflow/index.ts";
@@ -180,7 +181,10 @@ export class McpServer extends Core {
 				const resolution = resolveBacklogDirectory(rootPath);
 				if (!resolution.configPath) continue;
 
-				if (await this.upgradeToProject(rootPath, options)) {
+				// Task state is shared global state: a root inside a linked git
+				// worktree is redirected to the main checkout.
+				const projectRoot = (await redirectLinkedWorktreeRoot(rootPath)) ?? rootPath;
+				if (await this.upgradeToProject(projectRoot, options)) {
 					return;
 				}
 			}

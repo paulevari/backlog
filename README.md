@@ -331,6 +331,17 @@ When a project uses root config discovery, edit `backlog.config.yml` instead of 
 
 These items are added to every new task by default. You can add more on create with `--dod`, or disable defaults per task with `--no-dod-defaults`.
 
+### Planning statuses
+
+If your workflow uses a planning column before implementation, add it to `statuses` and list it under `planning_statuses`:
+
+```yaml
+statuses: ["Backlog", "Planning", "Ready", "In Progress", "Done"]
+planning_statuses: ["Planning"]
+```
+
+Tasks may enter planning statuses before task-level Acceptance Criteria and Definition of Done exist. Moving from the initial status or a planning status into execution statuses still requires both sections.
+
 For the full configuration reference (all options, default values, commands, and detailed notes), see **[ADVANCED-CONFIG.md](ADVANCED-CONFIG.md)**.
 
 ---
