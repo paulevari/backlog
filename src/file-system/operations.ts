@@ -1579,6 +1579,10 @@ ${description || `Milestone: ${title}`}`,
 				case "task_prefix":
 					config.prefixes = { task: value.replace(/['"]/g, "") };
 					break;
+				case "team_lead_enabled":
+				case "teamLeadEnabled":
+					config.teamLeadEnabled = value.toLowerCase() === "true";
+					break;
 				case "backlog_directory":
 				case "backlogDirectory":
 					config.backlogDirectory = value.replace(/['"]/g, "");
@@ -1610,6 +1614,7 @@ ${description || `Milestone: ${title}`}`,
 			bypassGitHooks: config.bypassGitHooks,
 			checkActiveBranches: config.checkActiveBranches,
 			activeBranchDays: config.activeBranchDays,
+			teamLeadEnabled: config.teamLeadEnabled,
 			onStatusChange: config.onStatusChange,
 			prefixes: config.prefixes,
 			backlogDirectory: config.backlogDirectory,
@@ -1650,6 +1655,7 @@ ${description || `Milestone: ${title}`}`,
 				? [`check_active_branches: ${config.checkActiveBranches}`]
 				: []),
 			...(typeof config.activeBranchDays === "number" ? [`active_branch_days: ${config.activeBranchDays}`] : []),
+			...(typeof config.teamLeadEnabled === "boolean" ? [`team_lead_enabled: ${config.teamLeadEnabled}`] : []),
 			...(config.onStatusChange ? [`onStatusChange: '${config.onStatusChange}'`] : []),
 			...(config.prefixes?.task ? [`task_prefix: "${config.prefixes.task}"`] : []),
 			...(config.backlogDirectory ? [`backlog_directory: "${config.backlogDirectory}"`] : []),

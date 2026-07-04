@@ -119,6 +119,7 @@ const CONFIG_GET_KEYS = [
 	"zeroPaddedIds",
 	"checkActiveBranches",
 	"activeBranchDays",
+	"teamLeadEnabled",
 ] as const;
 
 const CONFIG_SET_KEYS = [
@@ -136,6 +137,7 @@ const CONFIG_SET_KEYS = [
 	"zeroPaddedIds",
 	"checkActiveBranches",
 	"activeBranchDays",
+	"teamLeadEnabled",
 ] as const;
 
 function normalizeIntegrationOption(value: string): IntegrationMode | null {
@@ -4445,6 +4447,9 @@ addHelpSchema(configCmd.command("get <key>"), {
 				case "activeBranchDays":
 					console.log(config.activeBranchDays?.toString() || "30");
 					break;
+				case "teamLeadEnabled":
+					console.log(config.teamLeadEnabled?.toString() || "false");
+					break;
 				default:
 					console.error(`Unknown config key: ${key}`);
 					console.error(CONFIG_AVAILABLE_KEYS);
@@ -4624,6 +4629,18 @@ addHelpSchema(configCmd.command("set <key> <value>"), {
 						process.exit(1);
 					}
 					config.activeBranchDays = days;
+					break;
+				}
+				case "teamLeadEnabled": {
+					const boolValue = value.toLowerCase();
+					if (boolValue === "true" || boolValue === "1" || boolValue === "yes") {
+						config.teamLeadEnabled = true;
+					} else if (boolValue === "false" || boolValue === "0" || boolValue === "no") {
+						config.teamLeadEnabled = false;
+					} else {
+						console.error("teamLeadEnabled must be true or false");
+						process.exit(1);
+					}
 					break;
 				}
 				case "statuses":
