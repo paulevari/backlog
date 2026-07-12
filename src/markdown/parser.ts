@@ -193,6 +193,14 @@ export function parseTask(content: string): Task {
 		type: frontmatter.type ? String(frontmatter.type) : undefined,
 		ordinal: frontmatter.ordinal !== undefined ? Number(frontmatter.ordinal) : undefined,
 		onStatusChange: frontmatter.onStatusChange ? String(frontmatter.onStatusChange) : undefined,
+		revision:
+			typeof frontmatter.revision === "number" && Number.isInteger(frontmatter.revision) && frontmatter.revision > 0
+				? frontmatter.revision
+				: 1,
+		orchestration:
+			frontmatter.orchestration && typeof frontmatter.orchestration === "object"
+				? (frontmatter.orchestration as Task["orchestration"])
+				: undefined,
 	};
 }
 

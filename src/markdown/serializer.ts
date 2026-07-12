@@ -68,6 +68,8 @@ export function serializeTask(task: Task): string {
 		...(task.type && { type: task.type }),
 		...(task.ordinal !== undefined && { ordinal: task.ordinal }),
 		...(task.onStatusChange && { onStatusChange: task.onStatusChange }),
+		revision: task.revision ?? 1,
+		...(task.orchestration && { orchestration: task.orchestration }),
 	};
 
 	let contentBody = task.rawContent ?? "";

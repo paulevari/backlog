@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir } from "node:fs/promises";
 import { Core } from "../core/backlog.ts";
 import type { Task } from "../types/index.ts";
-import { createTaskLifecycleNotifier, TASK_LIFECYCLE_SUBJECT } from "../utils/task-lifecycle-notifications.ts";
+import {
+	createTaskLifecycleNotifier,
+	scopedBellerophonSubject,
+	TASK_LIFECYCLE_SUBJECT,
+} from "../utils/task-lifecycle-notifications.ts";
 import { createUniqueTestDir, initializeTestProject, safeCleanup } from "./test-utils.ts";
 
 const sampleTask = (overrides: Partial<Task> = {}): Task => ({
@@ -62,6 +66,7 @@ describe("task lifecycle notifications", () => {
 		expect(events).toHaveLength(5);
 		expect(events[0]).toMatchObject({
 			action: "created",
+			projectName: "Lifecycle Notifications",
 			projectRoot: testDir,
 			task: { id: task.id, title: "Create Event", status: "To Do" },
 		});
@@ -154,23 +159,37 @@ describe("task lifecycle notifications", () => {
 		await notifier.notify({
 			action: "status_changed",
 			previousStatus: "To Do",
+			projectName: "Lifecycle Notifications",
 			task: sampleTask({ status: "Done" }),
 			projectRoot: testDir,
 		});
 
 		expect(published).toHaveLength(1);
-		expect(published[0]?.subject).toBe(TASK_LIFECYCLE_SUBJECT);
+		expect(published[0]?.subject).toBe("Lifecycle-Notifications.backlog.task.lifecycle");
 
 		const bytes = published[0]?.payload;
 		const json = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
 		expect(JSON.parse(json)).toMatchObject({
-			version: 1,
+			version: 2,
+			taskRevision: 1,
 			action: "status_changed",
 			previousStatus: "To Do",
+			projectName: "Lifecycle Notifications",
 			newState: "Done",
 			projectRoot: testDir,
 			timestamp: "2026-06-29T12:00:00.000Z",
 			task: { id: "task-1", title: "Lifecycle Task", status: "Done" },
 		});
+	});
+
+	it("keeps the base lifecycle subject when no project name is available", async () => {
+		expect(scopedBellerophonSubject(TASK_LIFECYCLE_SUBJECT)).toBe(TASK_LIFECYCLE_SUBJECT);
+	});
+
+	it("prefixes lifecycle subjects with a normalized project name", async () => {
+		expect(scopedBellerophonSubject(TASK_LIFECYCLE_SUBJECT, "Annie")).toBe("Annie.backlog.task.lifecycle");
+		expect(scopedBellerophonSubject(TASK_LIFECYCLE_SUBJECT, "Test Project!")).toBe(
+			"Test-Project.backlog.task.lifecycle",
+		);
 	});
 });

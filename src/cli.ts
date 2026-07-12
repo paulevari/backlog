@@ -49,10 +49,12 @@ import {
 	type DocumentSearchResult,
 	isLocalEditableTask,
 	type Milestone,
+	type OrchestrationActorRole,
 	type SearchPriorityFilter,
 	type SearchResult,
 	type SearchResultType,
 	type Task,
+	type TaskGraphMaterializeInput,
 	type TaskListFilter,
 	type TaskSearchResult,
 } from "./types/index.ts";
@@ -126,6 +128,7 @@ const CONFIG_SET_KEYS = [
 	"defaultEditor",
 	"projectName",
 	"defaultStatus",
+	"statuses",
 	"dateFormat",
 	"maxColumnWidth",
 	"autoOpenBrowser",
@@ -191,6 +194,15 @@ const DOCUMENT_SEARCH_LIMIT_MAX = 100;
 const TASK_SORT_FIELDS = ["priority", "id", "ordinal"];
 const TASK_SORT_FIELD_LIST = TASK_SORT_FIELDS.join(", ");
 const TASK_TYPE_EXAMPLE = JSON.stringify(getCliTaskTypeValues()[0] ?? "<configured-type>");
+const ORCHESTRATION_GRAPH_INPUT_MAX_BYTES = 1024 * 1024;
+
+async function readOrchestrationGraphInput(value: string): Promise<string> {
+	const input = value === "-" ? await Bun.stdin.text() : value;
+	if (new TextEncoder().encode(input).byteLength > ORCHESTRATION_GRAPH_INPUT_MAX_BYTES) {
+		throw new Error("Orchestration graph input exceeds the 1 MiB limit.");
+	}
+	return input;
+}
 
 async function openUrlInBrowser(url: string): Promise<void> {
 	let cmd: string[];
@@ -677,6 +689,21 @@ program
 	.version(version, "-v, --version", "display version number")
 	.showSuggestionAfterError()
 	.showHelpAfterError("Run with --help to see accepted fields and examples.");
+
+program
+	.command("capabilities")
+	.description("report machine-readable Backlog.md orchestration capabilities")
+	.option("--json", "emit machine-readable JSON")
+	.action(async () => {
+		try {
+			const cwd = await requireProjectRoot();
+			const core = new Core(cwd);
+			console.log(JSON.stringify(await core.getOrchestrationCapabilities(), null, 2));
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+	});
 
 addHelpSchema(program.command("init [projectName]"), {
 	required: [],
@@ -1682,6 +1709,123 @@ taskCmd.hook("preSubcommand", (command, subcommand) => {
 		command.error("error: unknown option '--json'", { code: "commander.unknownOption", exitCode: 1 });
 	}
 });
+
+const taskGraphCmd = taskCmd.command("graph").description("manage durable orchestration task graphs");
+
+taskGraphCmd
+	.command("materialize")
+	.description("atomically materialize an orchestration task graph from JSON")
+	.requiredOption("--input <json>", "JSON task graph request, or - to read bounded JSON from stdin")
+	.option("--json", "emit machine-readable JSON")
+	.action(async (options: { input: string; json?: boolean }) => {
+		try {
+			const cwd = await requireProjectRoot();
+			const core = new Core(cwd);
+			const request = JSON.parse(await readOrchestrationGraphInput(options.input)) as TaskGraphMaterializeInput;
+			console.log(JSON.stringify(await core.materializeTaskGraph(request), null, 2));
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+	});
+
+taskGraphCmd
+	.command("list")
+	.description("list orchestration execution parents for reconciliation and monitor recovery")
+	.option("--non-terminal", "exclude executions whose parent is in the terminal status")
+	.option("--json", "emit machine-readable JSON")
+	.action(async (options: { nonTerminal?: boolean; json?: boolean }) => {
+		try {
+			const cwd = await requireProjectRoot();
+			const core = new Core(cwd);
+			console.log(JSON.stringify(await core.listTaskGraphs({ nonTerminal: options.nonTerminal }), null, 2));
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+	});
+
+taskGraphCmd
+	.command("view")
+	.description("view the authoritative persisted graph for an execution")
+	.requiredOption("--execution-id <id>", "orchestration execution ID")
+	.option("--json", "emit machine-readable JSON")
+	.action(async (options: { executionId: string; json?: boolean }) => {
+		try {
+			const cwd = await requireProjectRoot();
+			const core = new Core(cwd);
+			const graph = await core.getTaskGraph(options.executionId);
+			if (!graph) throw new Error(`Orchestration graph not found: ${options.executionId}`);
+			console.log(JSON.stringify(graph, null, 2));
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 1;
+		}
+	});
+
+taskCmd
+	.command("transition <id>")
+	.description("apply a guarded orchestration lifecycle transition")
+	.requiredOption("--expected-status <status>")
+	.requiredOption("--expected-revision <revision>")
+	.requiredOption("--target-status <status>")
+	.requiredOption("--actor-role <role>", "orchestrator, worker, or reviewer")
+	.option("--actor-session-id <id>", "authenticated session ID for the asserted orchestration role")
+	.requiredOption("--idempotency-key <key>")
+	.option("--orchestration <json>", "orchestration metadata patch")
+	.option("--implementation-notes <text>")
+	.option("--final-summary <text>")
+	.option("--json", "emit machine-readable JSON")
+	.action(
+		async (
+			id: string,
+			options: {
+				expectedStatus: string;
+				expectedRevision: string;
+				targetStatus: string;
+				actorRole: OrchestrationActorRole;
+				actorSessionId?: string;
+				idempotencyKey: string;
+				orchestration?: string;
+				implementationNotes?: string;
+				finalSummary?: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				const expectedRevision = Number(options.expectedRevision);
+				if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+					throw new Error("expected-revision must be a positive integer.");
+				}
+				if (!["orchestrator", "worker", "reviewer"].includes(options.actorRole)) {
+					throw new Error("actor-role must be orchestrator, worker, or reviewer.");
+				}
+				const cwd = await requireProjectRoot();
+				const core = new Core(cwd);
+				const orchestration = options.orchestration
+					? (JSON.parse(options.orchestration) as Record<string, unknown>)
+					: undefined;
+				const task = await core.transitionOrchestrationTask({
+					taskId: id,
+					expectedStatus: options.expectedStatus,
+					expectedRevision,
+					targetStatus: options.targetStatus,
+					actorRole: options.actorRole,
+					...(options.actorSessionId !== undefined && { actorSessionId: options.actorSessionId }),
+					idempotencyKey: options.idempotencyKey,
+					...(orchestration && { orchestration }),
+					...(options.implementationNotes !== undefined && {
+						implementationNotes: options.implementationNotes,
+					}),
+					...(options.finalSummary !== undefined && { finalSummary: options.finalSummary }),
+				});
+				console.log(JSON.stringify(task, null, 2));
+			} catch (error) {
+				console.error(error instanceof Error ? error.message : String(error));
+				process.exitCode = 1;
+			}
+		},
+	);
 
 addHelpSchema(taskCmd.command("create [title]"), {
 	required: [{ name: "title", type: "String", description: "Task title; prompted when omitted in interactive mode" }],
@@ -4503,6 +4647,28 @@ addHelpSchema(configCmd.command("set <key> <value>"), {
 				case "defaultStatus":
 					config.defaultStatus = value;
 					break;
+				case "statuses": {
+					const statuses = value
+						.split(",")
+						.map((status) => status.trim())
+						.filter(Boolean);
+					if (
+						statuses.length === 0 ||
+						new Set(statuses.map((status) => status.toLowerCase())).size !== statuses.length
+					) {
+						console.error("statuses must be a comma-separated list of unique, non-empty values");
+						process.exit(1);
+					}
+					if (
+						config.defaultStatus &&
+						!statuses.some((status) => status.toLowerCase() === config.defaultStatus?.toLowerCase())
+					) {
+						console.error(`statuses must include the configured defaultStatus: ${config.defaultStatus}`);
+						process.exit(1);
+					}
+					config.statuses = statuses;
+					break;
+				}
 				case "dateFormat":
 					config.dateFormat = value;
 					break;
@@ -4643,7 +4809,6 @@ addHelpSchema(configCmd.command("set <key> <value>"), {
 					}
 					break;
 				}
-				case "statuses":
 				case "planningStatuses":
 				case "labels":
 				case "types":

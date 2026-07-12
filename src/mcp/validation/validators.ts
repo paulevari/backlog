@@ -59,6 +59,8 @@ export function validateInput(input: unknown, schema: JsonSchema): ValidationRes
 			if (!fieldSchema) {
 				if (schema.additionalProperties === false) {
 					errors.push(`Unknown field '${key}' is not allowed`);
+				} else {
+					sanitizedData[key] = value;
 				}
 				continue;
 			}
@@ -200,6 +202,15 @@ function validateField(
 		case "boolean": {
 			const boolValue = typeof value === "string" ? value.toLowerCase() === "true" : Boolean(value);
 			return { isValid: true, errors: [], sanitizedValue: boolValue };
+		}
+
+		case "object": {
+			const result = validateInput(value, schema);
+			return {
+				isValid: result.isValid,
+				errors: result.errors.map((error) => `Field '${fieldName}': ${error}`),
+				sanitizedValue: result.sanitizedData,
+			};
 		}
 
 		default: {

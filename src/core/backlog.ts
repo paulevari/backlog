@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { rename as moveFile, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_DIRECTORIES, DEFAULT_STATUSES, FALLBACK_STATUS } from "../constants/index.ts";
@@ -14,11 +15,18 @@ import {
 	type DocumentUpdateInput,
 	EntityType,
 	isLocalEditableTask,
+	type MaterializedTaskGraph,
+	type MaterializedTaskGraphEntry,
 	type Milestone,
+	type OrchestrationCapabilities,
+	type OrchestrationExecutionSummary,
+	type OrchestrationTransitionInput,
 	type SearchFilters,
 	type Task,
 	type TaskCommentInput,
 	type TaskCreateInput,
+	type TaskGraphMaterializeInput,
+	type TaskGraphNodeInput,
 	type TaskListFilter,
 	type TaskUpdateInput,
 } from "../types/index.ts";
@@ -266,6 +274,24 @@ function formatAvailableIndexHint(items: AcceptanceCriterion[], emptyMessage: st
 	return `Available indexes: ${range}.`;
 }
 
+const ORCHESTRATION_REQUIRED_STATUSES = ["Active", "In Progress", "Review", "Human", "Deferred", "Done"] as const;
+const MAX_ORCHESTRATION_TRANSITION_RECEIPTS = 32;
+
+function stableJson(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+	if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+	const record = value as Record<string, unknown>;
+	return `{${Object.keys(record)
+		.filter((key) => record[key] !== undefined)
+		.sort()
+		.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+		.join(",")}}`;
+}
+
+function orchestrationRequestDigest(value: unknown): string {
+	return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
 export class Core {
 	public fs: FileSystem;
 	public git: GitOperations;
@@ -302,6 +328,28 @@ export class Core {
 			await this.contentStore.refreshTasks();
 		}
 		return result;
+	}
+
+	async getOrchestrationCapabilities(): Promise<OrchestrationCapabilities> {
+		const config = await this.fs.loadConfig();
+		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+		const normalized = new Set(statuses.map((status) => status.trim().toLowerCase()));
+		const missingStatuses = ORCHESTRATION_REQUIRED_STATUSES.filter((status) => !normalized.has(status.toLowerCase()));
+		return {
+			contractVersion: 1,
+			projectName: config?.projectName?.trim() || "Backlog",
+			statuses: [...statuses],
+			features: {
+				taskRevision: true,
+				orchestrationMetadata: true,
+				atomicGraphMaterialization: true,
+				guardedTransitions: true,
+			},
+			lifecycleEventVersions: [1, 2],
+			requiredStatuses: [...ORCHESTRATION_REQUIRED_STATUSES],
+			missingStatuses,
+			ready: missingStatuses.length === 0,
+		};
 	}
 
 	private async resolveCreateOrdinal(inputOrdinal: number | undefined, isDraft: boolean): Promise<number | undefined> {
@@ -1445,6 +1493,7 @@ export class Core {
 				modifiedFiles: normalizedModifiedFiles,
 				rawContent: input.rawContent ?? "",
 				createdDate,
+				revision: 1,
 				...(parentTaskId && { parentTaskId }),
 				...(priority && { priority }),
 				...(type && { type }),
@@ -1525,6 +1574,7 @@ export class Core {
 			const config = await this.fs.loadConfig();
 			task.status = config?.defaultStatus || FALLBACK_STATUS;
 		}
+		task.revision ??= 1;
 
 		const autoCommitEnabled = await this.shouldAutoCommit(autoCommit);
 		const filepath = await this.writePreparedTask(task, false);
@@ -1533,7 +1583,45 @@ export class Core {
 		return filepath;
 	}
 
+	private assertGenericTaskMutationAllowed(task: Task): void {
+		if (!task.orchestration || task.orchestration.executionId === "unbound") return;
+		throw new Error(
+			`Task ${task.id} is bound to orchestration execution ${task.orchestration.executionId}; use a guarded orchestration transition.`,
+		);
+	}
+
 	async updateTask(task: Task, autoCommit?: boolean): Promise<void> {
+		const outcome = await this.withCreateLock(async () => {
+			const persisted = await this.fs.loadTask(task.id);
+			if (persisted) this.assertGenericTaskMutationAllowed(persisted);
+			this.assertGenericTaskMutationAllowed(task);
+			return await this.updateTaskWhileLocked(task);
+		});
+
+		if (await this.shouldAutoCommit(autoCommit)) {
+			const filePath = await getTaskPath(task.id, this);
+			if (filePath) {
+				await this.git.addAndCommitTaskFile(task.id, filePath, "update");
+			}
+		}
+
+		if (outcome.statusChanged) {
+			await this.executeStatusChangeCallback(task, outcome.oldStatus, outcome.newStatus);
+		}
+
+		if (outcome.savedTask) {
+			await this.publishTaskLifecycleEvent(outcome.statusChanged ? "status_changed" : "updated", outcome.savedTask, {
+				previousStatus: outcome.statusChanged ? outcome.oldStatus : undefined,
+			});
+		}
+	}
+
+	private async updateTaskWhileLocked(task: Task): Promise<{
+		oldStatus: string;
+		newStatus: string;
+		statusChanged: boolean;
+		savedTask: Task | null;
+	}> {
 		normalizeAssignee(task);
 
 		// Load original task to detect status changes for callbacks
@@ -1541,6 +1629,7 @@ export class Core {
 		const oldStatus = originalTask?.status ?? "";
 		const newStatus = task.status ?? "";
 		const statusChanged = oldStatus !== newStatus;
+		task.revision = (originalTask?.revision ?? 1) + 1;
 
 		if (hasUpdatedDateRelevantChanges(originalTask, task)) {
 			task.updatedDate = new Date().toISOString().slice(0, 16).replace("T", " ");
@@ -1560,36 +1649,472 @@ export class Core {
 			}
 		}
 
-		if (await this.shouldAutoCommit(autoCommit)) {
-			const filePath = await getTaskPath(task.id, this);
-			if (filePath) {
-				await this.git.addAndCommitTaskFile(task.id, filePath, "update");
+		savedTask ??= await this.fs.loadTask(task.id);
+		return { oldStatus, newStatus, statusChanged, savedTask };
+	}
+
+	private buildGraphTask(
+		input: TaskGraphNodeInput,
+		options: {
+			id: string;
+			status: string;
+			createdDate: string;
+			parentTaskId?: string;
+			dependencies: string[];
+			executionId: string;
+			planRevision: string;
+			planReference?: string;
+			role: "execution" | "implementation";
+			idempotencyKey: string;
+			requestDigest: string;
+			parentSessionId?: string;
+		},
+	): Task {
+		const acceptanceCriteriaItems = (input.acceptanceCriteria ?? [])
+			.map((criterion, index) => ({
+				index: index + 1,
+				text: String(typeof criterion === "string" ? criterion : criterion.text).trim(),
+				checked: typeof criterion === "string" ? false : Boolean(criterion.checked),
+			}))
+			.filter((criterion) => criterion.text.length > 0);
+		const definitionOfDoneItems = (input.definitionOfDone ?? [])
+			.map((text, index) => ({ index: index + 1, text: String(text).trim(), checked: false }))
+			.filter((criterion) => criterion.text.length > 0);
+
+		return {
+			id: options.id,
+			title: input.title.trim(),
+			status: options.status,
+			assignee: normalizeStringList(input.assignee) ?? [],
+			labels: normalizeStringList(input.labels) ?? [],
+			dependencies: options.dependencies,
+			references: normalizeStringList(input.references) ?? [],
+			documentation: normalizeStringList(input.documentation) ?? [],
+			modifiedFiles: normalizeStringList(input.modifiedFiles) ?? [],
+			createdDate: options.createdDate,
+			rawContent: input.rawContent ?? "",
+			revision: 1,
+			...(options.parentTaskId && { parentTaskId: options.parentTaskId }),
+			...(input.priority && { priority: input.priority }),
+			...(input.description !== undefined && { description: input.description }),
+			...(input.implementationPlan !== undefined && { implementationPlan: input.implementationPlan }),
+			...(input.implementationNotes !== undefined && { implementationNotes: input.implementationNotes }),
+			...(input.finalSummary !== undefined && { finalSummary: input.finalSummary }),
+			...(acceptanceCriteriaItems.length > 0 && { acceptanceCriteriaItems }),
+			...(definitionOfDoneItems.length > 0 && { definitionOfDoneItems }),
+			orchestration: {
+				executionId: options.executionId,
+				role: options.role,
+				planRevision: options.planRevision,
+				planUnitId: input.key,
+				...(options.planReference && { planReference: options.planReference }),
+				idempotencyKey: options.idempotencyKey,
+				materializationRequestDigest: options.requestDigest,
+				...(options.parentSessionId && { parentSessionId: options.parentSessionId }),
+			},
+		};
+	}
+
+	private graphResultFromTasks(request: TaskGraphMaterializeInput, tasks: Task[]): MaterializedTaskGraph {
+		const byKey = new Map(tasks.map((task) => [task.orchestration?.planUnitId, task]));
+		const keys = [request.parent.key, ...request.units.map((unit) => unit.key)];
+		const entries = keys.map((key): MaterializedTaskGraphEntry => {
+			const task = byKey.get(key);
+			if (!task) {
+				throw new Error(`Existing orchestration graph ${request.executionId} is incomplete at ${key}.`);
+			}
+			return { key, task };
+		});
+		const parent = entries[0];
+		if (!parent) throw new Error("Orchestration graph requires a parent task.");
+		const planRevision = parent.task.orchestration?.planRevision;
+		if (!planRevision) throw new Error(`Existing orchestration graph ${request.executionId} has no plan revision.`);
+		return {
+			executionId: request.executionId,
+			planRevision,
+			parent,
+			tasks: entries,
+		};
+	}
+
+	async getTaskGraph(executionId: string): Promise<MaterializedTaskGraph | null> {
+		const normalizedExecutionId = executionId.trim();
+		if (!normalizedExecutionId) throw new Error("executionId is required.");
+		const tasks = (await this.fs.listTasks())
+			.filter((task) => task.orchestration?.executionId === normalizedExecutionId)
+			.sort((left, right) => {
+				const leftParent = left.orchestration?.role === "execution" ? 0 : 1;
+				const rightParent = right.orchestration?.role === "execution" ? 0 : 1;
+				return leftParent - rightParent || left.id.localeCompare(right.id, undefined, { numeric: true });
+			});
+		if (tasks.length === 0) return null;
+		const parentTask = tasks.find((task) => task.orchestration?.role === "execution");
+		if (!parentTask) throw new Error(`Orchestration graph ${normalizedExecutionId} has no parent task.`);
+		const planRevision = parentTask.orchestration?.planRevision;
+		if (!planRevision) throw new Error(`Orchestration graph ${normalizedExecutionId} has no plan revision.`);
+		const entries = tasks.map((task) => ({
+			key: task.orchestration?.planUnitId ?? task.id,
+			task,
+		}));
+		const parent = entries.find((entry) => entry.task.id === parentTask.id);
+		if (!parent) throw new Error(`Orchestration graph ${normalizedExecutionId} has no parent task.`);
+		return {
+			executionId: normalizedExecutionId,
+			planRevision,
+			parent,
+			tasks: entries,
+		};
+	}
+
+	async listTaskGraphs(options: { nonTerminal?: boolean } = {}): Promise<OrchestrationExecutionSummary[]> {
+		const config = await this.fs.loadConfig();
+		const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+		return (await this.fs.listTasks())
+			.filter((task) => task.orchestration?.role === "execution")
+			.filter((task) => !options.nonTerminal || !isTerminalStatus(task.status, statuses))
+			.map((task) => ({
+				executionId: task.orchestration?.executionId ?? "",
+				parentTaskId: task.id,
+				...(task.orchestration?.parentSessionId && { parentSessionId: task.orchestration.parentSessionId }),
+				planRevision: task.orchestration?.planRevision ?? "",
+				status: task.status,
+				revision: task.revision ?? 1,
+			}))
+			.sort((left, right) => left.executionId.localeCompare(right.executionId));
+	}
+
+	async materializeTaskGraph(request: TaskGraphMaterializeInput): Promise<MaterializedTaskGraph> {
+		const executionId = request.executionId.trim();
+		const idempotencyKey = request.idempotencyKey.trim();
+		const planRevision = request.planRevision.trim();
+		if (!executionId || !idempotencyKey || !planRevision) {
+			throw new Error("executionId, idempotencyKey, and planRevision are required.");
+		}
+		const normalizeNode = (node: TaskGraphNodeInput): TaskGraphNodeInput => ({
+			...node,
+			key: node.key.trim(),
+			...(node.dependsOn && { dependsOn: node.dependsOn.map((dependency) => dependency.trim()) }),
+		});
+		const parent = normalizeNode(request.parent);
+		const units = request.units.map(normalizeNode);
+		const nodes = [parent, ...units];
+		const keys = nodes.map((node) => node.key);
+		if (keys.some((key) => key.length === 0) || new Set(keys).size !== keys.length) {
+			throw new Error("Task graph keys must be non-empty and unique.");
+		}
+		for (const node of nodes) {
+			if (!node.title?.trim()) throw new Error(`Task graph node ${node.key} requires a title.`);
+			for (const dependency of node.dependsOn ?? []) {
+				if (!keys.includes(dependency)) {
+					throw new Error(`Task graph node ${node.key} references unknown dependency ${dependency}.`);
+				}
 			}
 		}
-
-		// Fire status change callback if status changed
-		if (statusChanged) {
-			await this.executeStatusChangeCallback(task, oldStatus, newStatus);
+		if ((parent.dependsOn ?? []).length > 0) {
+			throw new Error("The execution parent cannot depend on child tasks.");
 		}
+		const unitKeys = new Set(units.map((unit) => unit.key));
+		const indegree = new Map(units.map((unit) => [unit.key, 0]));
+		const dependents = new Map(units.map((unit) => [unit.key, [] as string[]]));
+		for (const unit of units) {
+			for (const dependency of unit.dependsOn ?? []) {
+				if (!unitKeys.has(dependency)) {
+					throw new Error(`Task graph child ${unit.key} cannot depend on execution parent ${dependency}.`);
+				}
+				indegree.set(unit.key, (indegree.get(unit.key) ?? 0) + 1);
+				dependents.get(dependency)?.push(unit.key);
+			}
+		}
+		const ready = [...indegree.entries()].filter(([, count]) => count === 0).map(([key]) => key);
+		let visited = 0;
+		while (ready.length > 0) {
+			const key = ready.shift();
+			if (!key) continue;
+			visited += 1;
+			for (const dependent of dependents.get(key) ?? []) {
+				const next = (indegree.get(dependent) ?? 1) - 1;
+				indegree.set(dependent, next);
+				if (next === 0) ready.push(dependent);
+			}
+		}
+		if (visited !== units.length) {
+			throw new Error("Task graph contains a dependency cycle.");
+		}
+		const statuses = new Map<string, string>();
+		for (const node of nodes) {
+			statuses.set(node.key, await this.requireCanonicalStatus(node.status ?? FALLBACK_STATUS));
+		}
+		const canonicalRequest: TaskGraphMaterializeInput = {
+			...request,
+			executionId,
+			idempotencyKey,
+			planRevision,
+			...(request.parentSessionId !== undefined && { parentSessionId: request.parentSessionId.trim() }),
+			...(request.planReference !== undefined && { planReference: request.planReference.trim() }),
+			parent: { ...parent, status: statuses.get(parent.key) },
+			units: units.map((unit) => ({ ...unit, status: statuses.get(unit.key) })),
+		};
+		const requestDigest = orchestrationRequestDigest(canonicalRequest);
+		let createdEntries: MaterializedTaskGraphEntry[] = [];
+		const graph = await this.withCreateLock(async () => {
+			const current = (await this.fs.listTasks()).filter(
+				(task) => task.orchestration?.executionId === canonicalRequest.executionId,
+			);
+			if (current.some((task) => task.orchestration?.idempotencyKey !== canonicalRequest.idempotencyKey)) {
+				throw new Error(
+					`Orchestration graph ${canonicalRequest.executionId} already exists with a different idempotency key.`,
+				);
+			}
+			if (current.some((task) => task.orchestration?.materializationRequestDigest !== requestDigest)) {
+				throw new Error(
+					`Orchestration graph ${canonicalRequest.executionId} idempotency key collision: request payload differs.`,
+				);
+			}
 
-		savedTask ??= await this.fs.loadTask(task.id);
-		if (savedTask) {
-			await this.publishTaskLifecycleEvent(statusChanged ? "status_changed" : "updated", savedTask, {
-				previousStatus: statusChanged ? oldStatus : undefined,
+			const currentByKey = new Map<string, Task>();
+			for (const task of current) {
+				const key = task.orchestration?.planUnitId;
+				if (!key || currentByKey.has(key)) {
+					throw new Error(
+						`Orchestration graph ${canonicalRequest.executionId} contains duplicate or missing plan unit IDs.`,
+					);
+				}
+				currentByKey.set(key, task);
+			}
+			const expectedKeys = new Set([canonicalRequest.parent.key, ...canonicalRequest.units.map((unit) => unit.key)]);
+			const unexpected = [...currentByKey.keys()].filter((key) => !expectedKeys.has(key));
+			if (unexpected.length > 0) {
+				throw new Error(
+					`Orchestration graph ${canonicalRequest.executionId} contains unexpected units: ${unexpected.join(", ")}.`,
+				);
+			}
+
+			const existingParent = current.find((task) => task.orchestration?.role === "execution");
+			const derivedParentIds = new Set(current.flatMap((task) => (task.parentTaskId ? [task.parentTaskId] : [])));
+			if (!existingParent && current.length > 0 && derivedParentIds.size !== 1) {
+				throw new Error(`Orchestration graph ${canonicalRequest.executionId} has no recoverable parent identity.`);
+			}
+			const parentId = existingParent?.id ?? [...derivedParentIds][0] ?? (await this.generateNextId(EntityType.Task));
+			const config = await this.fs.loadConfig();
+			const childId = (index: number) =>
+				`${parentId}.${config?.zeroPaddedIds ? String(index + 1).padStart(2, "0") : index + 1}`;
+			const idByKey = new Map<string, string>([[canonicalRequest.parent.key, parentId]]);
+			canonicalRequest.units.forEach((unit, index) => {
+				idByKey.set(unit.key, currentByKey.get(unit.key)?.id ?? childId(index));
+			});
+			for (const [key, task] of currentByKey) {
+				if (task.id !== idByKey.get(key)) {
+					throw new Error(
+						`Orchestration graph ${canonicalRequest.executionId} has an inconsistent task ID for ${key}.`,
+					);
+				}
+			}
+			const createdDate =
+				existingParent?.createdDate ??
+				current[0]?.createdDate ??
+				new Date().toISOString().slice(0, 16).replace("T", " ");
+			const canonicalNodes = [canonicalRequest.parent, ...canonicalRequest.units];
+			const prepared = canonicalNodes.map((node, index) =>
+				this.buildGraphTask(node, {
+					id: idByKey.get(node.key) as string,
+					status: statuses.get(node.key) as string,
+					createdDate,
+					...(index > 0 && { parentTaskId: parentId }),
+					dependencies: (node.dependsOn ?? []).map((key) => idByKey.get(key) as string),
+					executionId: canonicalRequest.executionId,
+					planRevision: canonicalRequest.planRevision,
+					...(canonicalRequest.planReference && { planReference: canonicalRequest.planReference }),
+					role: index === 0 ? "execution" : "implementation",
+					idempotencyKey: canonicalRequest.idempotencyKey,
+					requestDigest,
+					...(index === 0 &&
+						canonicalRequest.parentSessionId && {
+							parentSessionId: canonicalRequest.parentSessionId,
+						}),
+				}),
+			);
+			const missing = prepared.filter((task) => !currentByKey.has(task.orchestration?.planUnitId ?? ""));
+			const paths: string[] = [];
+			try {
+				for (const task of missing) {
+					const occupied = await this.fs.loadTask(task.id);
+					if (occupied) throw new Error(`Cannot recover orchestration graph: task ID ${task.id} is already occupied.`);
+					paths.push(await this.fs.saveTask(task));
+				}
+			} catch (error) {
+				await Promise.all(paths.map(async (path) => await unlink(path).catch(() => undefined)));
+				throw error;
+			}
+			const persisted = await Promise.all(prepared.map(async (task) => (await this.fs.loadTask(task.id)) ?? task));
+			const missingKeys = new Set(missing.map((task) => task.orchestration?.planUnitId));
+			createdEntries = persisted
+				.filter((task) => missingKeys.has(task.orchestration?.planUnitId))
+				.map((task) => ({ key: task.orchestration?.planUnitId ?? task.id, task }));
+			return this.graphResultFromTasks(canonicalRequest, persisted);
+		});
+
+		for (const entry of createdEntries) {
+			await this.publishTaskLifecycleEvent("created", entry.task, {
+				actorRole: "orchestrator",
+				correlationId: canonicalRequest.executionId,
+				idempotencyKey: canonicalRequest.idempotencyKey,
 			});
 		}
+		return graph;
+	}
+
+	async transitionOrchestrationTask(input: OrchestrationTransitionInput): Promise<Task> {
+		const targetStatus = await this.requireCanonicalStatus(input.targetStatus);
+		const expectedStatus = await this.requireCanonicalStatus(input.expectedStatus);
+		const idempotencyKey = input.idempotencyKey.trim();
+		if (!idempotencyKey) throw new Error("idempotencyKey is required.");
+		const requestDigest = orchestrationRequestDigest({
+			...input,
+			idempotencyKey,
+			expectedStatus,
+			targetStatus,
+		});
+		const outcome = await this.withCreateLock(async () => {
+			const task = await this.fs.loadTask(input.taskId);
+			if (!task) throw new Error(`Task not found: ${input.taskId}`);
+			if (task.orchestration && task.orchestration.executionId !== "unbound") {
+				const actorSessionId = input.actorSessionId?.trim();
+				if (!actorSessionId) {
+					throw new Error(`Task ${task.id} requires actorSessionId for orchestration transitions.`);
+				}
+				let authorizedSessionId: string | undefined;
+				if (input.actorRole === "orchestrator") {
+					const executionParent = (await this.fs.listTasks()).find(
+						(candidate) =>
+							candidate.orchestration?.executionId === task.orchestration?.executionId &&
+							candidate.orchestration?.role === "execution",
+					);
+					authorizedSessionId = executionParent?.orchestration?.parentSessionId;
+				} else if (input.actorRole === "worker") {
+					authorizedSessionId = task.orchestration.workerSessionId;
+				} else {
+					authorizedSessionId = task.orchestration.reviewerSessionId;
+				}
+				if (!authorizedSessionId) {
+					throw new Error(`Task ${task.id} has no authorized ${input.actorRole} session binding.`);
+				}
+				if (actorSessionId !== authorizedSessionId) {
+					throw new Error(`Task ${task.id} actorSessionId does not match the authorized ${input.actorRole} session.`);
+				}
+			}
+			const receipt = task.orchestration?.transitionReceipts?.find(
+				(candidate) => candidate.idempotencyKey === idempotencyKey,
+			);
+			if (receipt) {
+				if (receipt.requestDigest !== requestDigest) {
+					throw new Error(`Task ${task.id} idempotency key collision: request payload differs.`);
+				}
+				return {
+					task: { ...task, status: receipt.resultStatus, revision: receipt.resultRevision },
+					replayed: true,
+				};
+			}
+			const revision = task.revision ?? 1;
+			if (revision !== input.expectedRevision) {
+				throw new Error(`Task ${task.id} revision mismatch: expected ${input.expectedRevision}, found ${revision}.`);
+			}
+			if (task.status !== expectedStatus) {
+				throw new Error(`Task ${task.id} status mismatch: expected ${expectedStatus}, found ${task.status}.`);
+			}
+			const transition = `${expectedStatus} -> ${targetStatus}`;
+			if (input.actorRole === "worker") {
+				const allowed =
+					(expectedStatus === "Active" && targetStatus === "In Progress") ||
+					(expectedStatus === "In Progress" && targetStatus === "Review") ||
+					expectedStatus === targetStatus;
+				if (!allowed) throw new Error(`worker cannot transition ${transition.replace(" -> ", " to ")}.`);
+			}
+			if (input.actorRole === "reviewer" && expectedStatus !== targetStatus) {
+				throw new Error(`reviewer cannot transition ${transition.replace(" -> ", " to ")}.`);
+			}
+			const acceptedClosure =
+				expectedStatus !== "Done" && targetStatus === "Done" && input.actorRole === "orchestrator";
+			if (acceptedClosure && input.orchestration?.reviewVerdict !== "Accept") {
+				throw new Error(`Task ${task.id} requires an Accept review verdict before moving to Done.`);
+			}
+
+			const config = await this.fs.loadConfig();
+			const statuses = config?.statuses ?? [...DEFAULT_STATUSES];
+			const nextReceipt = {
+				idempotencyKey,
+				requestDigest,
+				resultStatus: targetStatus,
+				resultRevision: revision + 1,
+			};
+			const transitionReceipts = [...(task.orchestration?.transitionReceipts ?? []), nextReceipt].slice(
+				-MAX_ORCHESTRATION_TRANSITION_RECEIPTS,
+			);
+			const updated: Task = {
+				...task,
+				status: targetStatus,
+				revision: revision + 1,
+				updatedDate: new Date().toISOString().slice(0, 16).replace("T", " "),
+				...(input.implementationNotes !== undefined && {
+					implementationNotes: [task.implementationNotes, input.implementationNotes].filter(Boolean).join("\n\n"),
+				}),
+				...(input.finalSummary !== undefined && { finalSummary: input.finalSummary }),
+				...(acceptedClosure &&
+					task.acceptanceCriteriaItems && {
+						acceptanceCriteriaItems: task.acceptanceCriteriaItems.map((item) => ({ ...item, checked: true })),
+					}),
+				...(acceptedClosure &&
+					task.definitionOfDoneItems && {
+						definitionOfDoneItems: task.definitionOfDoneItems.map((item) => ({ ...item, checked: true })),
+					}),
+				orchestration: {
+					...(task.orchestration ?? { executionId: input.orchestration?.executionId ?? "unbound" }),
+					...input.orchestration,
+					idempotencyKey,
+					transitionReceipts,
+				},
+			};
+			validateInitialStatusReadiness(updated, statuses, targetStatus, expectedStatus, config?.planningStatuses ?? []);
+			validateTerminalStatusCompleteness(updated, statuses, targetStatus, expectedStatus);
+			await this.fs.saveTask(updated);
+			return { task: (await this.fs.loadTask(task.id)) ?? updated, replayed: false };
+		});
+
+		if (!outcome.replayed) {
+			await this.publishTaskLifecycleEvent(
+				targetStatus === expectedStatus ? "updated" : "status_changed",
+				outcome.task,
+				{
+					previousStatus: targetStatus === expectedStatus ? undefined : expectedStatus,
+					actorRole: input.actorRole,
+					correlationId: outcome.task.orchestration?.executionId,
+					idempotencyKey,
+				},
+			);
+		}
+		return outcome.task;
 	}
 
 	private async publishTaskLifecycleEvent(
 		action: TaskLifecycleEventAction,
 		task: Task,
-		options?: { previousStatus?: string },
+		options?: {
+			previousStatus?: string;
+			actorRole?: "orchestrator" | "worker" | "reviewer";
+			correlationId?: string;
+			idempotencyKey?: string;
+		},
 	): Promise<void> {
+		const config = await this.fs.loadConfig();
+		const projectName = config?.projectName?.trim();
 		await this.taskNotifier.notify({
 			action,
 			task,
+			...(projectName && { projectName }),
 			projectRoot: this.fs.rootDir,
 			...(options?.previousStatus !== undefined && { previousStatus: options.previousStatus }),
+			...(options?.actorRole !== undefined && { actorRole: options.actorRole }),
+			...(options?.correlationId !== undefined && { correlationId: options.correlationId }),
+			...(options?.idempotencyKey !== undefined && { idempotencyKey: options.idempotencyKey }),
 		});
 	}
 
@@ -2322,6 +2847,9 @@ export class Core {
 		});
 
 		const { demotedDraft, savedPath } = await this.withCreateLock(async () => {
+			const persisted = await this.fs.loadTask(task.id);
+			if (persisted) this.assertGenericTaskMutationAllowed(persisted);
+			this.assertGenericTaskMutationAllowed(task);
 			const newDraftId = await this.generateNextId(EntityType.Draft);
 			const taskPath = task.filePath;
 
@@ -2546,25 +3074,20 @@ export class Core {
 	}
 
 	async archiveTask(taskId: string, autoCommit?: boolean): Promise<boolean> {
-		const taskToArchive = await this.fs.loadTask(taskId);
-		if (!taskToArchive) {
-			return false;
-		}
-		const normalizedTaskId = taskToArchive.id;
-
-		// Get paths before moving the file
-		const taskPath = taskToArchive.filePath ?? (await getTaskPath(normalizedTaskId, this));
-		const taskFilename = await getTaskFilename(normalizedTaskId, this);
-
-		if (!taskPath || !taskFilename) return false;
-
-		const fromPath = taskPath;
-		const toPath = join(await this.fs.getArchiveTasksDir(), taskFilename);
-
-		const success = await this.fs.archiveTask(normalizedTaskId);
-		if (!success) {
-			return false;
-		}
+		const archived = await this.withCreateLock(async () => {
+			const task = await this.fs.loadTask(taskId);
+			if (!task) return null;
+			this.assertGenericTaskMutationAllowed(task);
+			const normalizedTaskId = task.id;
+			const taskPath = task.filePath ?? (await getTaskPath(normalizedTaskId, this));
+			const taskFilename = await getTaskFilename(normalizedTaskId, this);
+			if (!taskPath || !taskFilename) return null;
+			const toPath = join(await this.fs.getArchiveTasksDir(), taskFilename);
+			if (!(await this.fs.archiveTask(normalizedTaskId))) return null;
+			return { task, normalizedTaskId, fromPath: taskPath, toPath };
+		});
+		if (!archived) return false;
+		const { task: taskToArchive, normalizedTaskId, fromPath, toPath } = archived;
 
 		const activeTasks = await this.fs.listTasks();
 		const sanitizedTasks = this.sanitizeArchivedTaskLinks(activeTasks, normalizedTaskId);
@@ -2657,19 +3180,19 @@ export class Core {
 	}
 
 	async completeTask(taskId: string, autoCommit?: boolean): Promise<boolean> {
-		const task = await this.fs.loadTask(taskId);
-		if (!task) return false;
-		// Get paths before moving the file
-		const completedDir = this.fs.completedDir;
-		const taskPath = task.filePath ?? (await getTaskPath(task.id, this));
-		const taskFilename = taskPath ? basename(taskPath) : null;
-
-		if (!taskPath || !taskFilename) return false;
-
-		const fromPath = taskPath;
-		const toPath = join(completedDir, taskFilename);
-
-		const success = await this.fs.completeTask(taskId);
+		const completed = await this.withCreateLock(async () => {
+			const task = await this.fs.loadTask(taskId);
+			if (!task) return null;
+			this.assertGenericTaskMutationAllowed(task);
+			const taskPath = await getTaskPath(taskId, this);
+			const taskFilename = await getTaskFilename(taskId, this);
+			if (!taskPath || !taskFilename) return null;
+			const toPath = join(this.fs.completedDir, taskFilename);
+			const success = await this.fs.completeTask(taskId);
+			return { task, success, fromPath: taskPath, toPath };
+		});
+		if (!completed) return false;
+		const { task: taskToComplete, success, fromPath, toPath } = completed;
 
 		if (success && (await this.shouldAutoCommit(autoCommit))) {
 			// Stage the file move for proper Git tracking

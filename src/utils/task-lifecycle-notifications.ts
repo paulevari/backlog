@@ -1,4 +1,4 @@
-import type { Task } from "../types/index.ts";
+import type { OrchestrationActorRole, Task } from "../types/index.ts";
 
 export const TASK_LIFECYCLE_SUBJECT = "backlog.task.lifecycle";
 const DEFAULT_BELLEROPHON_URL = "evari://localhost:9000";
@@ -25,14 +25,27 @@ export interface TaskLifecycleEvent {
 	action: TaskLifecycleEventAction;
 	task: Task;
 	projectRoot: string;
+	projectName?: string;
 	previousStatus?: string;
 	timestamp?: string;
+	actorRole?: OrchestrationActorRole;
+	correlationId?: string;
+	idempotencyKey?: string;
 }
 
 export interface TaskLifecycleNotificationPayload extends TaskLifecycleEvent {
-	version: 1;
+	version: 2;
 	timestamp: string;
 	newState: string;
+	taskRevision: number;
+	executionId?: string;
+	planRevision?: string;
+}
+
+/** Legacy envelope retained as a documented decoder shape for v1 consumers. */
+export interface TaskLifecycleNotificationPayloadV1
+	extends Omit<TaskLifecycleNotificationPayload, "version" | "taskRevision" | "executionId" | "planRevision"> {
+	version: 1;
 }
 
 export interface TaskLifecycleNotifier {
@@ -42,6 +55,7 @@ export interface TaskLifecycleNotifier {
 interface TaskLifecycleNotifierOptions {
 	connect?: BellerophonConnect;
 	now?: () => string;
+	projectName?: string;
 	projectRoot?: string;
 	subject?: string;
 	url?: string;
@@ -69,9 +83,21 @@ function encodePayload(payload: TaskLifecycleNotificationPayload): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify(payload));
 }
 
+export function normalizeBellerophonSubjectToken(value: string | undefined): string {
+	return (value ?? "")
+		.trim()
+		.replace(/[^A-Za-z0-9_-]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
+export function scopedBellerophonSubject(baseSubject: string, projectName?: string): string {
+	const prefix = normalizeBellerophonSubjectToken(projectName || process.env.BACKLOG_BELLEROPHON_SUBJECT_PREFIX);
+	return prefix ? `${prefix}.${baseSubject}` : baseSubject;
+}
+
 export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOptions = {}): TaskLifecycleNotifier {
 	const connect = options.connect ?? defaultConnect;
-	const subject = options.subject ?? TASK_LIFECYCLE_SUBJECT;
 	const url = options.url ?? DEFAULT_BELLEROPHON_URL;
 	const now = options.now ?? (() => new Date().toISOString());
 	let disabled = false;
@@ -106,16 +132,29 @@ export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOption
 			}
 
 			const payload: TaskLifecycleNotificationPayload = {
-				version: 1,
+				version: 2,
 				timestamp: event.timestamp ?? now(),
 				projectRoot: event.projectRoot || options.projectRoot || process.cwd(),
 				action: event.action,
 				newState: event.task.status,
 				task: event.task,
+				taskRevision: event.task.revision ?? 1,
+				...(event.task.orchestration?.executionId !== undefined && {
+					executionId: event.task.orchestration.executionId,
+				}),
+				...(event.task.orchestration?.planRevision !== undefined && {
+					planRevision: event.task.orchestration.planRevision,
+				}),
+				...(event.projectName !== undefined && { projectName: event.projectName }),
 				...(event.previousStatus !== undefined && { previousStatus: event.previousStatus }),
+				...(event.actorRole !== undefined && { actorRole: event.actorRole }),
+				...(event.correlationId !== undefined && { correlationId: event.correlationId }),
+				...(event.idempotencyKey !== undefined && { idempotencyKey: event.idempotencyKey }),
 			};
 
 			try {
+				const subject =
+					options.subject ?? scopedBellerophonSubject(TASK_LIFECYCLE_SUBJECT, event.projectName ?? options.projectName);
 				connection.publish(subject, encodePayload(payload));
 				await connection.flush?.();
 			} catch (error) {

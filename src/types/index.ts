@@ -36,6 +36,39 @@ export interface TaskCommentInput {
 	createdDate?: string;
 }
 
+export type OrchestrationActorRole = "orchestrator" | "worker" | "reviewer";
+
+export interface OrchestrationTransitionReceipt {
+	idempotencyKey: string;
+	requestDigest: string;
+	resultStatus: string;
+	resultRevision: number;
+}
+
+export interface TaskOrchestrationMetadata {
+	executionId: string;
+	role?: "execution" | "implementation" | "integration" | "human-handoff";
+	planReference?: string;
+	planRevision?: string;
+	planUnitId?: string;
+	workerAgent?: string;
+	parentSessionId?: string;
+	workerSessionId?: string;
+	reviewerSessionId?: string;
+	harness?: string;
+	worktree?: string;
+	branch?: string;
+	baseCommit?: string;
+	headCommits?: string[];
+	reviewRound?: number;
+	reviewVerdict?: string;
+	integrated?: boolean;
+	lastHeartbeat?: string;
+	idempotencyKey?: string;
+	materializationRequestDigest?: string;
+	transitionReceipts?: OrchestrationTransitionReceipt[];
+}
+
 export interface Task {
 	id: string;
 	title: string;
@@ -75,6 +108,78 @@ export interface Task {
 	source?: "local" | "remote" | "completed" | "local-branch";
 	/** Optional per-task callback command to run on status change (overrides global config) */
 	onStatusChange?: string;
+	/** Monotonic persisted revision used by guarded orchestration mutations. */
+	revision?: number;
+	/** Durable execution identity and evidence owned by the orchestration workflow. */
+	orchestration?: TaskOrchestrationMetadata;
+}
+
+export interface TaskGraphNodeInput
+	extends Omit<TaskCreateInput, "acceptanceCriteria" | "definitionOfDoneAdd" | "disableDefinitionOfDoneDefaults"> {
+	key: string;
+	dependsOn?: string[];
+	acceptanceCriteria?: Array<AcceptanceCriterionInput | string>;
+	definitionOfDone?: string[];
+}
+
+export interface TaskGraphMaterializeInput {
+	executionId: string;
+	idempotencyKey: string;
+	planRevision: string;
+	planReference?: string;
+	parentSessionId?: string;
+	parent: TaskGraphNodeInput;
+	units: TaskGraphNodeInput[];
+}
+
+export interface OrchestrationExecutionSummary {
+	executionId: string;
+	parentTaskId: string;
+	parentSessionId?: string;
+	planRevision: string;
+	status: string;
+	revision: number;
+}
+
+export interface MaterializedTaskGraphEntry {
+	key: string;
+	task: Task;
+}
+
+export interface MaterializedTaskGraph {
+	executionId: string;
+	planRevision: string;
+	parent: MaterializedTaskGraphEntry;
+	tasks: MaterializedTaskGraphEntry[];
+}
+
+export interface OrchestrationTransitionInput {
+	taskId: string;
+	expectedStatus: string;
+	expectedRevision: number;
+	targetStatus: string;
+	actorRole: OrchestrationActorRole;
+	actorSessionId?: string;
+	idempotencyKey: string;
+	orchestration?: Partial<TaskOrchestrationMetadata>;
+	implementationNotes?: string;
+	finalSummary?: string;
+}
+
+export interface OrchestrationCapabilities {
+	contractVersion: 1;
+	projectName: string;
+	statuses: string[];
+	features: {
+		taskRevision: true;
+		orchestrationMetadata: true;
+		atomicGraphMaterialization: true;
+		guardedTransitions: true;
+	};
+	lifecycleEventVersions: [1, 2];
+	requiredStatuses: string[];
+	missingStatuses: string[];
+	ready: boolean;
 }
 
 export interface MilestoneBucket {

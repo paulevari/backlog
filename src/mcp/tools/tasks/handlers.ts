@@ -4,8 +4,10 @@ import { findLocalDuplicateTaskIds } from "../../../core/duplicate-task-repair.t
 import { isCreateLockError } from "../../../file-system/operations.ts";
 import {
 	isLocalEditableTask,
+	type OrchestrationTransitionInput,
 	type SearchPriorityFilter,
 	type Task,
+	type TaskGraphMaterializeInput,
 	type TaskListFilter,
 } from "../../../types/index.ts";
 import type { TaskEditArgs, TaskEditRequest } from "../../../types/task-edit-args.ts";
@@ -100,6 +102,40 @@ export class TaskHandlers {
 			throw new BacklogToolError(`Task not found: ${id}`, "TASK_NOT_FOUND");
 		}
 		return task;
+	}
+
+	private jsonResult(value: unknown): CallToolResult {
+		return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+	}
+
+	async orchestrationCapabilities(): Promise<CallToolResult> {
+		return this.jsonResult(await this.core.getOrchestrationCapabilities());
+	}
+
+	async materializeTaskGraph(args: TaskGraphMaterializeInput): Promise<CallToolResult> {
+		try {
+			return this.jsonResult(await this.core.materializeTaskGraph(args));
+		} catch (error) {
+			throw new BacklogToolError(error instanceof Error ? error.message : String(error), "VALIDATION_ERROR");
+		}
+	}
+
+	async viewTaskGraph(executionId: string): Promise<CallToolResult> {
+		const graph = await this.core.getTaskGraph(executionId);
+		if (!graph) throw new BacklogToolError(`Orchestration graph not found: ${executionId}`, "TASK_NOT_FOUND");
+		return this.jsonResult(graph);
+	}
+
+	async listTaskGraphs(nonTerminal = false): Promise<CallToolResult> {
+		return this.jsonResult(await this.core.listTaskGraphs({ nonTerminal }));
+	}
+
+	async transitionTask(args: OrchestrationTransitionInput): Promise<CallToolResult> {
+		try {
+			return this.jsonResult(await this.core.transitionOrchestrationTask(args));
+		} catch (error) {
+			throw new BacklogToolError(error instanceof Error ? error.message : String(error), "VALIDATION_ERROR");
+		}
 	}
 
 	async createTask(args: TaskCreateArgs): Promise<CallToolResult> {

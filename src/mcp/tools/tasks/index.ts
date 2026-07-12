@@ -10,7 +10,16 @@ import {
 import { createSimpleValidatedTool } from "../../validation/tool-wrapper.ts";
 import type { TaskCreateArgs, TaskEditRequest, TaskListArgs, TaskSearchArgs } from "./handlers.ts";
 import { TaskHandlers } from "./handlers.ts";
-import { taskArchiveSchema, taskCompleteSchema, taskViewSchema } from "./schemas.ts";
+import {
+	orchestrationCapabilitiesSchema,
+	taskArchiveSchema,
+	taskCompleteSchema,
+	taskGraphListSchema,
+	taskGraphMaterializeSchema,
+	taskGraphViewSchema,
+	taskTransitionSchema,
+	taskViewSchema,
+} from "./schemas.ts";
 
 export function registerTaskTools(server: McpServer, config: BacklogConfig): void {
 	const handlers = new TaskHandlers(server);
@@ -19,6 +28,60 @@ export function registerTaskTools(server: McpServer, config: BacklogConfig): voi
 	const taskEditSchema = generateTaskEditSchema(config);
 	const taskListSchema = generateTaskListSchema(config);
 	const taskSearchSchema = generateTaskSearchSchema(config);
+	const orchestrationCapabilitiesTool: McpToolHandler = createSimpleValidatedTool(
+		{
+			name: "orchestration_capabilities",
+			description: "Report Backlog.md orchestration contract support and required-status readiness",
+			inputSchema: orchestrationCapabilitiesSchema,
+			annotations: { title: "Orchestration Capabilities", readOnlyHint: true, destructiveHint: false },
+		},
+		orchestrationCapabilitiesSchema,
+		async () => handlers.orchestrationCapabilities(),
+	);
+
+	const taskGraphMaterializeTool: McpToolHandler = createSimpleValidatedTool(
+		{
+			name: "task_graph_materialize",
+			description: "Atomically and idempotently materialize a durable orchestration task graph",
+			inputSchema: taskGraphMaterializeSchema,
+			annotations: { title: "Materialize Task Graph", destructiveHint: false },
+		},
+		taskGraphMaterializeSchema,
+		async (input) => handlers.materializeTaskGraph(input as never),
+	);
+
+	const taskGraphViewTool: McpToolHandler = createSimpleValidatedTool(
+		{
+			name: "task_graph_view",
+			description: "Read the authoritative persisted parent and child snapshots for an execution",
+			inputSchema: taskGraphViewSchema,
+			annotations: { title: "View Task Graph", readOnlyHint: true, destructiveHint: false },
+		},
+		taskGraphViewSchema,
+		async (input) => handlers.viewTaskGraph(String(input.executionId)),
+	);
+
+	const taskGraphListTool: McpToolHandler = createSimpleValidatedTool(
+		{
+			name: "task_graph_list",
+			description: "List execution parents for reconciliation and active-monitor recovery",
+			inputSchema: taskGraphListSchema,
+			annotations: { title: "List Task Graphs", readOnlyHint: true, destructiveHint: false },
+		},
+		taskGraphListSchema,
+		async (input) => handlers.listTaskGraphs(Boolean(input.nonTerminal)),
+	);
+
+	const taskTransitionTool: McpToolHandler = createSimpleValidatedTool(
+		{
+			name: "task_transition",
+			description: "Apply an idempotent role-aware task transition guarded by expected status and revision",
+			inputSchema: taskTransitionSchema,
+			annotations: { title: "Transition Orchestration Task", destructiveHint: false },
+		},
+		taskTransitionSchema,
+		async (input) => handlers.transitionTask(input as never),
+	);
 
 	const createTaskTool: McpToolHandler = createSimpleValidatedTool(
 		{
@@ -100,6 +163,11 @@ export function registerTaskTools(server: McpServer, config: BacklogConfig): voi
 	);
 
 	server.addTool(createTaskTool);
+	server.addTool(orchestrationCapabilitiesTool);
+	server.addTool(taskGraphMaterializeTool);
+	server.addTool(taskGraphListTool);
+	server.addTool(taskGraphViewTool);
+	server.addTool(taskTransitionTool);
 	server.addTool(listTaskTool);
 	server.addTool(searchTaskTool);
 	server.addTool(editTaskTool);
@@ -109,4 +177,15 @@ export function registerTaskTools(server: McpServer, config: BacklogConfig): voi
 }
 
 export type { TaskCreateArgs, TaskEditArgs, TaskListArgs, TaskSearchArgs } from "./handlers.ts";
-export { taskArchiveSchema, taskCompleteSchema, taskListSchema, taskSearchSchema, taskViewSchema } from "./schemas.ts";
+export {
+	orchestrationCapabilitiesSchema,
+	taskArchiveSchema,
+	taskCompleteSchema,
+	taskGraphListSchema,
+	taskGraphMaterializeSchema,
+	taskGraphViewSchema,
+	taskListSchema,
+	taskSearchSchema,
+	taskTransitionSchema,
+	taskViewSchema,
+} from "./schemas.ts";
