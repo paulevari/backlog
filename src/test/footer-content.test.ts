@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { getBoardFooterContent } from "../ui/board.ts";
 import { formatFooterContent } from "../ui/footer-content.ts";
 
 describe("formatFooterContent", () => {
@@ -43,5 +44,17 @@ describe("formatFooterContent", () => {
 
 		expect(result.height).toBe(1);
 		expect(result.content).toBe(content);
+	});
+});
+
+describe("board zoom footer", () => {
+	it("advertises zoom in overview and overview while zoomed", () => {
+		expect(getBoardFooterContent(3, false, false)).toContain("[Z]{/} Zoom");
+		expect(getBoardFooterContent(3, true, false)).toContain("[Z]{/} Overview");
+	});
+
+	it("does not advertise zoom for a one-column board", () => {
+		expect(getBoardFooterContent(1, false, false)).not.toContain("[Z]{/}");
+		expect(getBoardFooterContent(1, true, true)).not.toContain("[Z]{/}");
 	});
 });

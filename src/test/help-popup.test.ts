@@ -11,6 +11,7 @@ describe("help popup shortcuts", () => {
 		expect(keys).toContain("T");
 		expect(keys).toContain("M");
 		expect(keys).toContain("N");
+		expect(keys).toContain("Z");
 		expect(keys).toContain("←→");
 	});
 
@@ -22,5 +23,11 @@ describe("help popup shortcuts", () => {
 		expect(keys).toContain("l");
 		expect(keys).not.toContain("F");
 		expect(keys).not.toContain("M");
+		expect(keys).not.toContain("Z");
+	});
+
+	it("describes column zoom only in board help", () => {
+		expect(getHelpShortcuts("board")).toContainEqual({ key: "Z", desc: "Toggle column zoom" });
+		expect(getHelpShortcuts("task-list")).not.toContainEqual({ key: "Z", desc: "Toggle column zoom" });
 	});
 });

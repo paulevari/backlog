@@ -18,6 +18,7 @@ const BOARD_SHORTCUTS: Shortcut[] = [
 	{ key: "F", desc: "Filter by Labels" },
 	{ key: "I", desc: "Filter by Milestone" },
 	{ key: "←→", desc: "Navigate columns" },
+	{ key: "Z", desc: "Toggle column zoom" },
 	{ key: "↑↓", desc: "Navigate tasks" },
 	{ key: "Enter", desc: "View task details" },
 	{ key: "E", desc: "Edit task" },

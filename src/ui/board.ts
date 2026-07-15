@@ -58,6 +58,58 @@ export function hasMoveBlockingBoardFilters(filters: BoardSharedFilters): boolea
 	);
 }
 
+export function calculateBoardColumnLayout(
+	columnCount: number,
+	activeIndex = 0,
+	zoomed = false,
+): Array<{ left: number; width: number }> {
+	if (columnCount <= 0) return [];
+	if (!zoomed || columnCount === 1) {
+		const width = Math.max(1, Math.floor(100 / columnCount));
+		return Array.from({ length: columnCount }, (_, index) => {
+			const left = index * width;
+			return {
+				left,
+				width: index === columnCount - 1 ? Math.max(0, 100 - left) : width,
+			};
+		});
+	}
+
+	const active = Math.max(0, Math.min(activeIndex, columnCount - 1));
+	const activeWidth = columnCount === 2 ? (2 / 3) * 100 : 50;
+	const inactiveWidth = (100 - activeWidth) / (columnCount - 1);
+	let left = 0;
+	return Array.from({ length: columnCount }, (_, index) => {
+		const width = index === columnCount - 1 ? 100 - left : index === active ? activeWidth : inactiveWidth;
+		const geometry = { left, width };
+		left += width;
+		return geometry;
+	});
+}
+
+export function resolveBoardSelection(
+	columns: ColumnData[],
+	currentColumn: number,
+	selectedTaskId?: string,
+): { columnIndex: number; rowIndex?: number } | undefined {
+	if (columns.length === 0) return undefined;
+	if (selectedTaskId) {
+		for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+			const rowIndex = columns[columnIndex]?.tasks.findIndex((task) => task.id === selectedTaskId) ?? -1;
+			if (rowIndex >= 0) return { columnIndex, rowIndex };
+		}
+	}
+	return { columnIndex: Math.min(columns.length - 1, Math.max(0, currentColumn)) };
+}
+
+export function shouldRestoreBoardSelectionWithoutFocus(
+	popupOpen: boolean,
+	filterPopupOpen: boolean,
+	modalOpen: boolean,
+): boolean {
+	return popupOpen || filterPopupOpen || modalOpen;
+}
+
 type MutableList = ListInterface & {
 	selected?: number;
 	setItem?: (index: number, content: string) => void;
@@ -173,6 +225,14 @@ function formatColumnLabel(status: string, count: number): string {
 
 const DEFAULT_FOOTER_CONTENT =
 	" {cyan-fg}[Tab]{/} View | {cyan-fg}[N]{/} New | {cyan-fg}[/]{/} Search | {cyan-fg}[T/P/F/I]{/} Filter | {cyan-fg}[←→/↑↓]{/} Nav | {cyan-fg}[Enter]{/} Details | {cyan-fg}[E/M/C/A]{/} Edit/Move/Comp/Arch | {cyan-fg}[Y]{/} Yank | {cyan-fg}[?]{/} Help | {cyan-fg}[q]{/} Quit";
+
+export function getBoardFooterContent(columnCount: number, zoomed: boolean, filtered: boolean): string {
+	let content = DEFAULT_FOOTER_CONTENT;
+	if (columnCount > 1) {
+		content += ` | {cyan-fg}[Z]{/} ${zoomed ? "Overview" : "Zoom"}`;
+	}
+	return filtered ? `${content} | {yellow-fg}Filtered{/}` : content;
+}
 
 export function shouldRebuildColumns(current: ColumnData[], next: ColumnData[]): boolean {
 	if (current.length !== next.length) {
@@ -315,6 +375,7 @@ export async function renderBoardTui(
 		let configuredWorkflowStatuses = [...statuses];
 		let currentStatuses = initialColumns.map((column) => column.status);
 		let currentCol = 0;
+		let zoomed = false;
 		let popupOpen = false;
 		let currentFocus: "board" | "filters" = "board";
 		let filterPopupOpen = false;
@@ -465,8 +526,6 @@ export async function renderBoardTui(
 			columns = [];
 		};
 
-		const columnWidthFor = (count: number) => Math.max(1, Math.floor(100 / Math.max(1, count)));
-
 		const getSelectedRowIndex = (column: ColumnView): number => {
 			const selected = (column.list as MutableList).selected ?? 0;
 			return Math.max(0, Math.min(selected, Math.max(0, column.tasks.length - 1)));
@@ -511,18 +570,26 @@ export async function renderBoardTui(
 			return buildRenderedTaskListItems(tasks, moveOp?.taskId);
 		};
 
+		const applyColumnGeometry = () => {
+			const layout = calculateBoardColumnLayout(columns.length, currentCol, zoomed);
+			columns.forEach((column, index) => {
+				const geometry = layout[index];
+				if (!geometry) return;
+				column.box.left = `${geometry.left}%`;
+				column.box.width = `${geometry.width}%`;
+			});
+		};
+
 		const createColumnViews = (data: ColumnData[]) => {
 			clearColumns();
-			const widthPercent = columnWidthFor(data.length);
+			const layout = calculateBoardColumnLayout(data.length, currentCol, zoomed);
 			data.forEach((columnData, idx) => {
-				const left = idx * widthPercent;
-				const isLast = idx === data.length - 1;
-				const width = isLast ? `${Math.max(0, 100 - left)}%` : `${widthPercent}%`;
+				const geometry = layout[idx] ?? { left: 0, width: 100 };
 				const columnBox = box({
 					parent: boardArea,
-					left: `${left}%`,
+					left: `${geometry.left}%`,
 					top: 0,
-					width,
+					width: `${geometry.width}%`,
 					height: "100%",
 					border: { type: "line" },
 					style: { border: { fg: "gray" } },
@@ -561,6 +628,7 @@ export async function renderBoardTui(
 						setColumnActiveState(columns[currentCol], false);
 						currentCol = idx;
 					}
+					applyColumnGeometry();
 					(column.list as MutableList).selected = typeof selected === "number" ? selected : getSelectedRowIndex(column);
 					currentFocus = "board";
 					setColumnActiveState(column, true);
@@ -575,6 +643,7 @@ export async function renderBoardTui(
 						setColumnActiveState(columns[currentCol], false);
 						currentCol = idx;
 					}
+					applyColumnGeometry();
 					setColumnActiveState(columns[currentCol], true);
 					currentFocus = "board";
 					filterHeader?.setBorderColor("cyan");
@@ -621,6 +690,7 @@ export async function renderBoardTui(
 			setColumnActiveState(previous, false);
 
 			currentCol = idx;
+			applyColumnGeometry();
 			const current = columns[currentCol];
 			if (!current) return;
 
@@ -643,20 +713,19 @@ export async function renderBoardTui(
 
 		const restoreSelection = (taskId?: string) => {
 			const activate = currentFocus !== "filters";
-			if (columns.length === 0) return;
-			if (taskId) {
-				for (let colIdx = 0; colIdx < columns.length; colIdx += 1) {
-					const column = columns[colIdx];
-					if (!column) continue;
-					const taskIndex = column.tasks.findIndex((task) => task.id === taskId);
-					if (taskIndex !== -1) {
-						focusColumn(colIdx, taskIndex, activate);
-						return;
-					}
+			const selection = resolveBoardSelection(currentColumnsData, currentCol, taskId);
+			if (!selection) return;
+			if (shouldRestoreBoardSelectionWithoutFocus(popupOpen, filterPopupOpen, modalOpen)) {
+				setColumnActiveState(columns[currentCol], false);
+				currentCol = selection.columnIndex;
+				applyColumnGeometry();
+				const current = columns[currentCol];
+				if (current && selection.rowIndex !== undefined) {
+					selectColumnRow(current, selection.rowIndex, false);
 				}
+				return;
 			}
-			const safeIndex = Math.min(columns.length - 1, Math.max(0, currentCol));
-			focusColumn(safeIndex, undefined, activate);
+			focusColumn(selection.columnIndex, selection.rowIndex, activate);
 		};
 
 		const applyColumnData = (data: ColumnData[], selectedTaskId?: string) => {
@@ -900,8 +969,7 @@ export async function renderBoardTui(
 					" {green-fg}MOVE MODE{/} | {cyan-fg}[←→]{/} Change Column | {cyan-fg}[↑↓]{/} Reorder | {cyan-fg}[Enter/M]{/} Confirm | {cyan-fg}[Esc]{/} Cancel",
 				);
 			} else {
-				const base = DEFAULT_FOOTER_CONTENT;
-				setFooterContent(hasActiveSharedFilters() ? `${base} | {yellow-fg}Filtered{/}` : base);
+				setFooterContent(getBoardFooterContent(columns.length, zoomed, hasActiveSharedFilters()));
 			}
 			syncBoardAreaLayout();
 		};
@@ -940,6 +1008,9 @@ export async function renderBoardTui(
 			} finally {
 				renderingView = false;
 			}
+
+			applyColumnGeometry();
+			updateFooter();
 			screen.render();
 		};
 
@@ -1087,6 +1158,16 @@ export async function renderBoardTui(
 		screen.key(["i", "I"], () => {
 			if (popupOpen || filterPopupOpen || modalOpen || moveOp) return;
 			void openFilterPicker("milestone");
+		});
+
+		screen.key(["z", "Z"], () => {
+			if (popupOpen || filterPopupOpen || modalOpen || moveOp || currentFocus === "filters" || columns.length <= 1) {
+				return;
+			}
+			zoomed = !zoomed;
+			applyColumnGeometry();
+			updateFooter();
+			screen.render();
 		});
 
 		screen.key(["left", "h"], () => {
