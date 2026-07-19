@@ -2446,6 +2446,8 @@ addHelpSchema(taskCmd.command("list"), {
 			description: "Require every listed label; repeat --labels or use label1,label2",
 		},
 		{ name: "search", type: "String", description: "Search task title, description, notes, comments, and metadata" },
+		{ name: "deps-satisfied", type: "Boolean", description: "Only tasks with all dependencies done or missing" },
+		{ name: "exclude-parents", type: "Boolean", description: "Exclude tasks that have children" },
 		{ name: "limit", type: "Positive integer", description: "Maximum tasks to display after sorting" },
 		{ name: "sort", type: choiceType(TASK_SORT_FIELDS), description: "Task ordering before applying limit" },
 		{ name: "plain", type: "Boolean", description: "Use text output instead of interactive UI" },
@@ -2483,6 +2485,8 @@ addHelpSchema(taskCmd.command("list"), {
 		createMultiValueAccumulator(),
 	)
 	.option("--search <query>", "search task title, description, notes, comments, and metadata")
+	.option("--deps-satisfied", "only tasks with all dependencies done or missing")
+	.option("--exclude-parents", "exclude tasks that have children")
 	.option("--limit <number>", "limit tasks displayed after sorting")
 	.option("--sort <field>", `sort tasks by field (${TASK_SORT_FIELD_LIST})`)
 	.option("--plain", "use plain text output instead of interactive UI")
@@ -2545,6 +2549,12 @@ addHelpSchema(taskCmd.command("list"), {
 				return;
 			}
 			baseFilters.type = canonicalTaskTypes;
+		}
+		if (options.depsSatisfied) {
+			baseFilters.depsSatisfied = true;
+		}
+		if (options.excludeParents) {
+			baseFilters.excludeParents = true;
 		}
 
 		const labelFilters = parseDelimitedStringList(options.labels) ?? [];

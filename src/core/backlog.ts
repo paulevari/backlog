@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { rename as moveFile, readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { DEFAULT_DIRECTORIES, DEFAULT_STATUSES, FALLBACK_STATUS } from "../constants/index.ts";
 import { FileSystem, isCreateLockError } from "../file-system/operations.ts";
 import { type GitIndexEntry, GitOperations } from "../git/operations.ts";
@@ -525,6 +525,29 @@ export class Core {
 					return requiredLabels.some((label) => labelSet.has(label));
 				});
 			}
+		}
+		if (filters.depsSatisfied) {
+			result = result.filter((task) => {
+				if (!task.dependencies || task.dependencies.length === 0) {
+					return true;
+				}
+				return task.dependencies.every((depId) => {
+					const dep = tasks.find((t) => t.id === depId);
+					if (!dep) {
+						return true;
+					}
+					return dep.status === "Done";
+				});
+			});
+		}
+		if (filters.excludeParents) {
+			const parentIds = new Set<string>();
+			for (const task of tasks) {
+				if (task.parentTaskId) {
+					parentIds.add(task.parentTaskId);
+				}
+			}
+			result = result.filter((task) => !parentIds.has(task.id));
 		}
 		return result;
 	}

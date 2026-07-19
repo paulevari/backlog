@@ -285,6 +285,8 @@ export interface TaskListFilter {
 	milestone?: string;
 	parentTaskId?: string;
 	labels?: string[];
+	depsSatisfied?: boolean;
+	excludeParents?: boolean;
 }
 
 export interface Decision {
