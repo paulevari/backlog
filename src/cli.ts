@@ -3924,10 +3924,32 @@ function addBoardOptions(cmd: Command) {
 	return cmd
 		.option("-l, --layout <layout>", "board layout (horizontal|vertical)", "horizontal")
 		.option("--vertical", "use vertical layout (shortcut for --layout vertical)")
-		.option("-m, --milestones", "group tasks by milestone");
+		.option("-m, --milestones", "group tasks by milestone")
+		.option("--include-drafts", "show drafts in a leading Draft column");
 }
 
-async function handleBoardView(options: { layout?: string; vertical?: boolean; milestones?: boolean }) {
+async function includeDraftsForBoard(
+	core: Core,
+	tasks: Task[],
+	statuses: string[],
+): Promise<{ tasks: Task[]; statuses: string[] }> {
+	const drafts = await core.filesystem.listDrafts();
+	return {
+		tasks: [...tasks, ...drafts.map((draft) => ({ ...draft, status: "Draft" }))],
+		statuses: ["Draft", ...statuses.filter((status) => status.trim().toLowerCase() !== "draft")],
+	};
+}
+
+async function handleBoardView(
+	options: {
+		layout?: string;
+		vertical?: boolean;
+		milestones?: boolean;
+		includeDrafts?: boolean;
+	},
+	command?: Command,
+) {
+	const includeDrafts = Boolean(options.includeDrafts ?? command?.optsWithGlobals().includeDrafts);
 	const cwd = await requireProjectRoot();
 	const core = new Core(cwd);
 	const config = await core.filesystem.loadConfig();
@@ -4041,8 +4063,12 @@ async function handleBoardView(options: { layout?: string; vertical?: boolean; m
 							return { ...task, milestone: undefined };
 						})
 					: tasks;
+			const boardTasks = normalizedTasks.map((t) => ({ ...t, status: t.status || "" }));
+			if (includeDrafts) {
+				return await includeDraftsForBoard(core, boardTasks, statuses);
+			}
 			return {
-				tasks: normalizedTasks.map((t) => ({ ...t, status: t.status || "" })),
+				tasks: boardTasks,
 				statuses,
 			};
 		},
@@ -4059,11 +4085,13 @@ boardCmd
 	.option("--force", "overwrite existing file without confirmation")
 	.option("--readme", "export to README.md with markers")
 	.option("--export-version <version>", "version to include in the export")
-	.action(async (filename, options) => {
+	.option("--include-drafts", "show drafts in a leading Draft column")
+	.action(async (filename, options, command) => {
+		const includeDrafts = Boolean(options.includeDrafts ?? command.optsWithGlobals().includeDrafts);
 		const cwd = await requireProjectRoot();
 		const core = new Core(cwd);
 		const config = await core.filesystem.loadConfig();
-		const statuses = config?.statuses || [];
+		let statuses = config?.statuses || [];
 		if (await printDuplicateIntegrityWarning(core)) return;
 
 		// Load tasks with progress tracking
@@ -4075,6 +4103,10 @@ boardCmd
 			finalTasks = await core.loadTasks((msg) => {
 				loadingScreen?.update(msg);
 			});
+
+			if (includeDrafts) {
+				({ tasks: finalTasks, statuses } = await includeDraftsForBoard(core, finalTasks, statuses));
+			}
 
 			loadingScreen?.update(`Total tasks: ${finalTasks.length}`);
 

@@ -18,6 +18,7 @@ interface BoardProps {
   onNewTask: () => void;
   highlightTaskId?: string | null;
   tasks: Task[];
+  drafts?: Task[];
   onRefreshData?: () => Promise<void>;
   statuses: string[];
   isLoading: boolean;
@@ -45,11 +46,15 @@ const BOARD_FILTER_SELECT_CLASS =
 const BOARD_FILTER_BUTTON_CLASS =
   'h-10 py-2 px-3 text-sm border border-gray-300 dark:border-gray-600 rounded-lg whitespace-nowrap transition-colors duration-200 text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700';
 
+// Pseudo-status for the read-only drafts column; drafts are intake items, not tasks with a status.
+const DRAFT_COLUMN = 'Draft';
+
 const Board: React.FC<BoardProps> = ({
   onEditTask,
   onNewTask,
   highlightTaskId,
   tasks,
+  drafts,
   onRefreshData,
   statuses,
   isLoading,
@@ -320,13 +325,35 @@ const Board: React.FC<BoardProps> = ({
     }, 4000);
   };
 
+  const draftTasks = useMemo(() => (drafts ?? []).map((draft) => ({ ...draft, status: DRAFT_COLUMN })), [drafts]);
+
+  const boardStatuses = useMemo(
+    () =>
+      draftTasks.length > 0
+        ? [DRAFT_COLUMN, ...statuses.filter((status) => status.trim().toLowerCase() !== 'draft')]
+        : statuses,
+    [draftTasks, statuses]
+  );
+
+  const tasksWithDrafts = useMemo(
+    () => (draftTasks.length > 0 ? [...tasks, ...draftTasks] : tasks),
+    [tasks, draftTasks]
+  );
+
+  const filteredTasksWithDrafts = useMemo(
+    () => (draftTasks.length > 0 ? [...filteredTasks, ...draftTasks] : filteredTasks),
+    [filteredTasks, draftTasks]
+  );
+
+  const isDraftColumn = (status: string): boolean => draftTasks.length > 0 && status === DRAFT_COLUMN;
+
   // Use all tasks for building lanes (so we can show/collapse other milestones)
   const lanes = useMemo(
-    () => buildLanes(laneMode, tasks, milestoneEntities.map((milestone) => milestone.id), milestoneEntities, {
+    () => buildLanes(laneMode, tasksWithDrafts, milestoneEntities.map((milestone) => milestone.id), milestoneEntities, {
       archivedMilestoneIds,
       archivedMilestones,
     }),
-    [laneMode, tasks, milestoneEntities, archivedMilestoneIds, archivedMilestones]
+    [laneMode, tasksWithDrafts, milestoneEntities, archivedMilestoneIds, archivedMilestones]
   );
 
   // Check if any tasks actually have milestones assigned
@@ -343,23 +370,23 @@ const Board: React.FC<BoardProps> = ({
 
   // Use all tasks for lane grouping (for counts and visibility)
   const tasksByLane = useMemo(
-    () => groupTasksByLaneAndStatus(laneMode, lanes, statuses, tasks, {
+    () => groupTasksByLaneAndStatus(laneMode, lanes, boardStatuses, tasksWithDrafts, {
       archivedMilestoneIds,
       milestoneEntities,
       archivedMilestones,
     }),
-    [laneMode, lanes, statuses, tasks, archivedMilestoneIds, milestoneEntities, archivedMilestones]
+    [laneMode, lanes, boardStatuses, tasksWithDrafts, archivedMilestoneIds, milestoneEntities, archivedMilestones]
   );
 
   // Separate grouping for filtered display in columns
   const filteredTasksByLane = useMemo(
     () =>
-      groupTasksByLaneAndStatus(laneMode, lanes, statuses, filteredTasks, {
+      groupTasksByLaneAndStatus(laneMode, lanes, boardStatuses, filteredTasksWithDrafts, {
         archivedMilestoneIds,
         milestoneEntities,
         archivedMilestones,
       }),
-    [laneMode, lanes, statuses, filteredTasks, archivedMilestoneIds, milestoneEntities, archivedMilestones]
+    [laneMode, lanes, boardStatuses, filteredTasksWithDrafts, archivedMilestoneIds, milestoneEntities, archivedMilestones]
   );
 
   const displayTasksByLane = (milestoneFilter || hasActiveFilters) ? filteredTasksByLane : tasksByLane;
@@ -412,14 +439,14 @@ const Board: React.FC<BoardProps> = ({
   // While a task is being dragged we keep every column visible so empty statuses remain drop targets.
   const isDragging = dragSourceStatus !== null;
   const visibleStatuses = useMemo(() => {
-    if (!hideEmptyColumns || isDragging) return statuses;
-    return statuses.filter(status => {
+    if (!hideEmptyColumns || isDragging) return boardStatuses;
+    return boardStatuses.filter(status => {
       for (const statusMap of displayTasksByLane.values()) {
         if ((statusMap.get(status) ?? []).length > 0) return true;
       }
       return false;
     });
-  }, [hideEmptyColumns, isDragging, statuses, displayTasksByLane]);
+  }, [hideEmptyColumns, isDragging, boardStatuses, displayTasksByLane]);
 
   // Only show lane headers when multiple lanes exist
   const shouldShowLaneHeaders = useMemo(() => {
@@ -630,6 +657,7 @@ const Board: React.FC<BoardProps> = ({
                           <TaskColumn
                             title={status}
                             tasks={getTasksForLane(lane.key, status)}
+                            readOnly={isDraftColumn(status)}
                             onTaskUpdate={handleTaskUpdate}
                             onEditTask={onEditTask}
                             onTaskReorder={handleTaskReorder}
@@ -647,7 +675,7 @@ const Board: React.FC<BoardProps> = ({
                               setDragSourceStatus(null);
                               setDragSourceLane(null);
                             }}
-                            onCleanup={status === terminalStatus ? () => setShowCleanupModal(true) : undefined}
+                            onCleanup={!isDraftColumn(status) && status === terminalStatus ? () => setShowCleanupModal(true) : undefined}
                           />
                         </div>
                       ))}
@@ -666,6 +694,7 @@ const Board: React.FC<BoardProps> = ({
                 <TaskColumn
                   title={status}
                   tasks={getTasksForLane(DEFAULT_LANE_KEY, status)}
+                  readOnly={isDraftColumn(status)}
                   onTaskUpdate={handleTaskUpdate}
                   onEditTask={onEditTask}
                   onTaskReorder={handleTaskReorder}
@@ -682,7 +711,7 @@ const Board: React.FC<BoardProps> = ({
                     setDragSourceStatus(null);
                     setDragSourceLane(null);
                   }}
-                  onCleanup={status === terminalStatus ? () => setShowCleanupModal(true) : undefined}
+                  onCleanup={!isDraftColumn(status) && status === terminalStatus ? () => setShowCleanupModal(true) : undefined}
                 />
               </div>
             ))}

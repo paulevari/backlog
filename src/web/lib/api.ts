@@ -347,6 +347,14 @@ export class ApiClient {
 		return response.json();
 	}
 
+	async fetchDrafts(): Promise<Task[]> {
+		const response = await fetch(`${API_BASE}/drafts`);
+		if (!response.ok) {
+			throw new Error("Failed to fetch drafts");
+		}
+		return response.json();
+	}
+
 	async fetchConfig(): Promise<BacklogConfig> {
 		const response = await fetch(`${API_BASE}/config`);
 		if (!response.ok) {

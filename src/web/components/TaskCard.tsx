@@ -5,6 +5,7 @@ import TaskTypeBadge from './TaskTypeBadge';
 
 interface TaskCardProps {
   task: Task;
+  readOnly?: boolean;
   onUpdate: (taskId: string, updates: Partial<Task>) => void;
   onEdit: (task: Task) => void;
   onDragStart?: () => void;
@@ -14,7 +15,7 @@ interface TaskCardProps {
   availableTypes?: string[];
 }
 
-const TaskCard: React.FC<TaskCardProps> = ({ task, onEdit, onDragStart, onDragEnd, status, laneId, availableTypes }) => {
+const TaskCard: React.FC<TaskCardProps> = ({ task, readOnly, onEdit, onDragStart, onDragEnd, status, laneId, availableTypes }) => {
   const [isDragging, setIsDragging] = React.useState(false);
   const [showBranchTooltip, setShowBranchTooltip] = React.useState(false);
 
@@ -22,6 +23,10 @@ const TaskCard: React.FC<TaskCardProps> = ({ task, onEdit, onDragStart, onDragEn
   const isFromOtherBranch = Boolean(task.branch);
 
   const handleDragStart = (e: React.DragEvent) => {
+    if (readOnly) {
+      e.preventDefault();
+      return;
+    }
     // Prevent dragging cross-branch tasks
     if (isFromOtherBranch) {
       e.preventDefault();
@@ -105,23 +110,29 @@ const TaskCard: React.FC<TaskCardProps> = ({ task, onEdit, onDragStart, onDragEn
 
       <div
         className={`bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-md p-3 mb-2 transition-all duration-200 ${
-          isFromOtherBranch 
-            ? 'opacity-75 cursor-not-allowed border-dashed' 
+          isFromOtherBranch || readOnly
+            ? 'opacity-75 cursor-default border-dashed'
             : 'cursor-pointer hover:shadow-md dark:hover:shadow-lg hover:border-stone-500 dark:hover:border-stone-400'
         } ${getPriorityClass(task.priority)} ${
           isDragging ? 'opacity-50 transform rotate-2 scale-105' : ''
         }`}
-        draggable={!isFromOtherBranch}
+        draggable={!readOnly && !isFromOtherBranch}
 		role="button"
 		tabIndex={0}
 		aria-label={`Open ${task.id}: ${task.title}`}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
-        onClick={() => onEdit(task)}
+        onClick={() => {
+          if (!readOnly) {
+            onEdit(task);
+          }
+        }}
 		onKeyDown={(event) => {
 			if (event.key === 'Enter' || event.key === ' ') {
 				event.preventDefault();
-				onEdit(task);
+				if (!readOnly) {
+					onEdit(task);
+				}
 			}
 		}}
       >

@@ -8,6 +8,7 @@ import TaskCard from './TaskCard';
 interface TaskColumnProps {
   title: string;
   tasks: Task[];
+  readOnly?: boolean;
   onTaskUpdate: (taskId: string, updates: Partial<Task>) => void;
   onEditTask: (task: Task) => void;
   onTaskReorder?: (payload: ReorderTaskPayload) => void;
@@ -53,6 +54,7 @@ const sortByCreatedDate = (tasks: Task[], direction: CreatedDateSortDirection): 
 const TaskColumn: React.FC<TaskColumnProps> = ({
   title,
   tasks,
+  readOnly,
   onTaskUpdate,
   onEditTask,
   onTaskReorder,
@@ -72,7 +74,7 @@ const TaskColumn: React.FC<TaskColumnProps> = ({
   const [showMenu, setShowMenu] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
   const columnActionsId = React.useId();
-  const canReorderColumn = Boolean(onTaskReorder) && tasks.length > 1 && tasks.every(task => !task.branch);
+  const canReorderColumn = Boolean(onTaskReorder) && !readOnly && tasks.length > 1 && tasks.every(task => !task.branch);
 
   React.useEffect(() => {
     if (!showMenu) return;
@@ -131,6 +133,7 @@ const TaskColumn: React.FC<TaskColumnProps> = ({
   };
 
   const handleDrop = (e: React.DragEvent) => {
+    if (readOnly) return;
     e.preventDefault();
     setIsDragOver(false);
     setDropPosition(null);
@@ -182,6 +185,7 @@ const TaskColumn: React.FC<TaskColumnProps> = ({
   };
 
   const handleDragEnter = (e: React.DragEvent) => {
+    if (readOnly) return;
     e.preventDefault();
     setIsDragOver(true);
   };
@@ -196,6 +200,7 @@ const TaskColumn: React.FC<TaskColumnProps> = ({
   };
   
   const handleDragOverColumn = (e: React.DragEvent) => {
+    if (readOnly) return;
     e.preventDefault();
     // Clear drop position if dragging in empty space
     const target = e.target as HTMLElement;
@@ -211,11 +216,13 @@ const TaskColumn: React.FC<TaskColumnProps> = ({
       className={`rounded-lg p-4 transition-colors duration-200 h-full ${
         isEmpty ? 'min-h-24' : 'min-h-96'
       } ${
-        isDragOver && (dragSourceStatus !== title || (dragSourceLane ?? null) !== (laneId ?? null))
-          ? 'bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-600 border-dashed'
-          : isEmpty
-            ? 'bg-gray-50/50 dark:bg-gray-800/30 border border-gray-200/50 dark:border-gray-700/50'
-            : 'bg-white border border-gray-200 shadow-sm dark:bg-gray-800 dark:border-gray-700'
+        readOnly
+          ? 'bg-gray-50/50 dark:bg-gray-800/30 border border-dashed border-gray-300 dark:border-gray-600'
+          : isDragOver && (dragSourceStatus !== title || (dragSourceLane ?? null) !== (laneId ?? null))
+            ? 'bg-green-50 dark:bg-green-900/20 border border-green-300 dark:border-green-600 border-dashed'
+            : isEmpty
+              ? 'bg-gray-50/50 dark:bg-gray-800/30 border border-gray-200/50 dark:border-gray-700/50'
+              : 'bg-white border border-gray-200 shadow-sm dark:bg-gray-800 dark:border-gray-700'
       }`}
       onDrop={handleDrop}
       onDragOver={handleDragOverColumn}
@@ -320,6 +327,7 @@ const TaskColumn: React.FC<TaskColumnProps> = ({
             
             <TaskCard
               task={task}
+              readOnly={readOnly}
               onUpdate={onTaskUpdate}
               onEdit={onEditTask}
               onDragStart={() => {

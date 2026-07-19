@@ -4,6 +4,7 @@ import Board from './Board';
 import { type Milestone, type Task } from '../../types';
 import { resolvePriorityValue } from '../../utils/priority-config';
 import { resolveTaskTypeValue } from '../../utils/task-type-config';
+import { apiClient } from '../lib/api';
 import { type LaneMode } from '../lib/lanes';
 
 interface BoardPageProps {
@@ -43,7 +44,27 @@ export default function BoardPage({
 	const [highlightTaskId, setHighlightTaskId] = useState<string | null>(null);
 	const [laneMode, setLaneMode] = useState<LaneMode>('none');
 	const [milestoneFilter, setMilestoneFilter] = useState<string | null>(null);
+	const [drafts, setDrafts] = useState<Task[]>([]);
 	const laneStorageKey = 'backlog.board.lane';
+
+	useEffect(() => {
+		let cancelled = false;
+		apiClient
+			.fetchDrafts()
+			.then((loaded) => {
+				if (!cancelled) {
+					setDrafts(loaded);
+				}
+			})
+			.catch(() => {
+				if (!cancelled) {
+					setDrafts([]);
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [tasks]);
 
 	useEffect(() => {
 		const storedLane = typeof window !== 'undefined' ? window.localStorage.getItem(laneStorageKey) : null;
@@ -162,6 +183,7 @@ export default function BoardPage({
 				onNewTask={onNewTask}
 				highlightTaskId={highlightTaskId}
 				tasks={tasks}
+				drafts={drafts}
 				onRefreshData={onRefreshData}
 				statuses={statuses}
 				milestones={milestones}
