@@ -518,6 +518,21 @@ describe("Task selection filters", () => {
 				false,
 			);
 
+			await core.createTask(
+				{
+					id: "task-4",
+					title: "Done Task in Open Milestone",
+					status: "Done",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					milestone: openMilestone.id,
+					rawContent: "Done but milestone still open",
+				},
+				false,
+			);
+
 			const baselineResult = await $`bun ${CLI_PATH} task list --json --status Done`.cwd(TEST_DIR).quiet();
 			const baselineOutput = JSON.parse(baselineResult.stdout.toString());
 			const baselineTaskIds = baselineOutput.tasks.map((t: { id: string }) => t.id);
@@ -531,6 +546,14 @@ describe("Task selection filters", () => {
 			expect(taskIds).toContain("TASK-1");
 			expect(taskIds).not.toContain("TASK-2");
 			expect(taskIds).not.toContain("TASK-3");
+
+			const scopedDoneResult = await $`bun ${CLI_PATH} task list --json --status Done --milestone-scope open`
+				.cwd(TEST_DIR)
+				.quiet();
+			const scopedDoneOutput = JSON.parse(scopedDoneResult.stdout.toString());
+			const scopedDoneTaskIds = scopedDoneOutput.tasks.map((t: { id: string }) => t.id);
+			expect(scopedDoneTaskIds).toContain("TASK-4");
+			expect(scopedDoneTaskIds).not.toContain("TASK-2");
 		});
 	});
 });
