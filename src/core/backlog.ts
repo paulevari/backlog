@@ -93,6 +93,7 @@ import {
 	type DuplicateRepairResult,
 	previewDuplicateTaskIdRepair,
 } from "./duplicate-task-repair.ts";
+import { isDoneStatus } from "./milestones.ts";
 import { migrateDraftPrefixes, needsDraftPrefixMigration } from "./prefix-migration.ts";
 import { calculateNewOrdinal, DEFAULT_ORDINAL_STEP, resolveOrdinalConflicts } from "./reorder.ts";
 import { SearchService } from "./search-service.ts";
@@ -548,6 +549,32 @@ export class Core {
 				}
 			}
 			result = result.filter((task) => !parentIds.has(task.id));
+		}
+		if (filters.milestoneScope === "open") {
+			const completedMilestones = new Set<string>();
+			const milestoneTasksMap = new Map<string, Task[]>();
+			for (const task of tasks) {
+				if (task.milestone) {
+					if (!milestoneTasksMap.has(task.milestone)) {
+						milestoneTasksMap.set(task.milestone, []);
+					}
+					milestoneTasksMap.get(task.milestone)?.push(task);
+				}
+			}
+			for (const [milestoneId, milestoneTasks] of milestoneTasksMap.entries()) {
+				if (milestoneTasks.length > 0) {
+					const allDone = milestoneTasks.every((t) => isDoneStatus(t.status));
+					if (allDone) {
+						completedMilestones.add(milestoneId);
+					}
+				}
+			}
+			result = result.filter((task) => {
+				if (!task.milestone) {
+					return false;
+				}
+				return !completedMilestones.has(task.milestone);
+			});
 		}
 		return result;
 	}

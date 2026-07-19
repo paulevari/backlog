@@ -402,4 +402,65 @@ describe("Task selection filters", () => {
 			expect(taskIds).not.toContain("TASK-3");
 		});
 	});
+
+	describe("milestone scope filter", () => {
+		it("T-104: should filter by open milestone scope", async () => {
+			const core = new Core(TEST_DIR);
+			const openMilestone = await core.filesystem.createMilestone("Open Milestone");
+			const completedMilestone = await core.filesystem.createMilestone("Completed Milestone");
+
+			await core.createTask(
+				{
+					id: "task-1",
+					title: "Task in Open Milestone",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					milestone: openMilestone.id,
+					rawContent: "In open milestone",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-2",
+					title: "Done Task in Completed Milestone",
+					status: "Done",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					milestone: completedMilestone.id,
+					rawContent: "In completed milestone",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-3",
+					title: "Task with No Milestone",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					rawContent: "No milestone",
+				},
+				false,
+			);
+
+			const result = await $`bun ${CLI_PATH} task list --json --milestone-scope open`.cwd(TEST_DIR).quiet();
+			const output = JSON.parse(result.stdout.toString());
+
+			expect(output.schemaVersion).toBe(1);
+			const taskIds = output.tasks.map((t: { id: string }) => t.id);
+			expect(taskIds).toContain("TASK-1");
+			expect(taskIds).not.toContain("TASK-2");
+			expect(taskIds).not.toContain("TASK-3");
+		});
+	});
 });

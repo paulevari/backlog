@@ -287,6 +287,7 @@ export interface TaskListFilter {
 	labels?: string[];
 	depsSatisfied?: boolean;
 	excludeParents?: boolean;
+	milestoneScope?: "open";
 }
 
 export interface Decision {
