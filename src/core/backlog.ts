@@ -75,6 +75,7 @@ import {
 } from "../utils/task-lifecycle-notifications.ts";
 import {
 	AmbiguousTaskIdError,
+	canonicalTaskId,
 	getDraftPath,
 	getTaskFilename,
 	getTaskPath,
@@ -528,16 +529,21 @@ export class Core {
 			}
 		}
 		if (filters.depsSatisfied) {
+			const statusByCanonicalId = new Map<string, string>();
+			for (const t of tasks) {
+				statusByCanonicalId.set(canonicalTaskId(t.id), t.status);
+			}
 			result = result.filter((task) => {
 				if (!task.dependencies || task.dependencies.length === 0) {
 					return true;
 				}
 				return task.dependencies.every((depId) => {
-					const dep = tasks.find((t) => t.id === depId);
-					if (!dep) {
+					const depStatus = statusByCanonicalId.get(canonicalTaskId(depId));
+					// Missing or deleted dependency IDs are non-blocking.
+					if (depStatus === undefined) {
 						return true;
 					}
-					return dep.status === "Done";
+					return isDoneStatus(depStatus);
 				});
 			});
 		}
@@ -545,10 +551,10 @@ export class Core {
 			const parentIds = new Set<string>();
 			for (const task of tasks) {
 				if (task.parentTaskId) {
-					parentIds.add(task.parentTaskId);
+					parentIds.add(canonicalTaskId(task.parentTaskId));
 				}
 			}
-			result = result.filter((task) => !parentIds.has(task.id));
+			result = result.filter((task) => !parentIds.has(canonicalTaskId(task.id)));
 		}
 		if (filters.milestoneScope === "open") {
 			const completedMilestones = new Set<string>();

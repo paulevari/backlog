@@ -109,6 +109,44 @@ describe("Task selection filters", () => {
 			expect(taskIds).toContain("TASK-5");
 			expect(taskIds).not.toContain("TASK-4");
 		});
+
+		it("should match dependency references across ID formatting variants", async () => {
+			const core = new Core(TEST_DIR);
+
+			await core.createTask(
+				{
+					id: "task-1",
+					title: "Open Dependency",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					rawContent: "Open dependency",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-2",
+					title: "Zero-Padded Dependency Reference",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: ["TASK-01"],
+					rawContent: "References TASK-1 with a zero-padded ID",
+				},
+				false,
+			);
+
+			const result = await $`bun ${CLI_PATH} task list --json --deps-satisfied`.cwd(TEST_DIR).quiet();
+			const output = JSON.parse(result.stdout.toString());
+
+			const taskIds = output.tasks.map((t: { id: string }) => t.id);
+			expect(taskIds).not.toContain("TASK-2");
+		});
 	});
 
 	describe("--exclude-parents filter", () => {
@@ -199,6 +237,46 @@ describe("Task selection filters", () => {
 			expect(taskIds).toContain("TASK-3");
 			expect(taskIds).not.toContain("TASK-1");
 			expect(taskIds).not.toContain("TASK-2");
+		});
+
+		it("should exclude parents referenced by formatting-variant child IDs", async () => {
+			const core = new Core(TEST_DIR);
+
+			await core.createTask(
+				{
+					id: "task-1",
+					title: "Parent Referenced With Padding",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					rawContent: "Parent task",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-1.1",
+					title: "Child With Padded Parent Reference",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					parentTaskId: "TASK-01",
+					rawContent: "Child referencing parent with a zero-padded ID",
+				},
+				false,
+			);
+
+			const result = await $`bun ${CLI_PATH} task list --json --exclude-parents`.cwd(TEST_DIR).quiet();
+			const output = JSON.parse(result.stdout.toString());
+
+			const taskIds = output.tasks.map((t: { id: string }) => t.id);
+			expect(taskIds).not.toContain("TASK-1");
+			expect(taskIds).toContain("TASK-1.1");
 		});
 	});
 
