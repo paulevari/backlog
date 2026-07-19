@@ -223,12 +223,21 @@ describe("Task selection filters", () => {
 				);
 			}
 
-			const result = await $`bun ${CLI_PATH} task list --json --labels test --limit 3`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result1 = await $`bun ${CLI_PATH} task list --json --labels test --limit 3`.cwd(TEST_DIR).quiet();
+			const output1 = JSON.parse(result1.stdout.toString());
 
-			expect(output.schemaVersion).toBe(1);
-			expect(output.tasks).toBeDefined();
-			expect(output.tasks).toHaveLength(3);
+			const result2 = await $`bun ${CLI_PATH} task list --json --labels test --limit 3`.cwd(TEST_DIR).quiet();
+			const output2 = JSON.parse(result2.stdout.toString());
+
+			expect(output1.schemaVersion).toBe(1);
+			expect(output1.tasks).toBeDefined();
+			expect(output1.tasks).toHaveLength(3);
+
+			const taskIds1 = output1.tasks.map((t: { id: string }) => t.id);
+			const taskIds2 = output2.tasks.map((t: { id: string }) => t.id);
+
+			expect(taskIds1).toEqual(taskIds2);
+			expect(taskIds1).toEqual(["TASK-1", "TASK-2", "TASK-3"]);
 		});
 	});
 
@@ -401,6 +410,62 @@ describe("Task selection filters", () => {
 			expect(taskIds).not.toContain("TASK-2");
 			expect(taskIds).not.toContain("TASK-3");
 		});
+
+		it("T-105b: core filter engine should support require_any (OR) label matching", async () => {
+			const core = new Core(TEST_DIR);
+
+			await core.createTask(
+				{
+					id: "task-1",
+					title: "Has Label A",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: ["a"],
+					dependencies: [],
+					rawContent: "Has a",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-2",
+					title: "Has Label B",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: ["b"],
+					dependencies: [],
+					rawContent: "Has b",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-3",
+					title: "Has Both A and B",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: ["a", "b"],
+					dependencies: [],
+					rawContent: "Has both",
+				},
+				false,
+			);
+
+			const tasks = await core.queryTasks({
+				filters: { labels: ["a", "b"] },
+				includeCrossBranch: false,
+			});
+
+			const taskIds = tasks.map((t) => t.id);
+			expect(taskIds).toContain("TASK-1");
+			expect(taskIds).toContain("TASK-2");
+			expect(taskIds).toContain("TASK-3");
+		});
 	});
 
 	describe("milestone scope filter", () => {
@@ -452,6 +517,11 @@ describe("Task selection filters", () => {
 				},
 				false,
 			);
+
+			const baselineResult = await $`bun ${CLI_PATH} task list --json --status Done`.cwd(TEST_DIR).quiet();
+			const baselineOutput = JSON.parse(baselineResult.stdout.toString());
+			const baselineTaskIds = baselineOutput.tasks.map((t: { id: string }) => t.id);
+			expect(baselineTaskIds).toContain("TASK-2");
 
 			const result = await $`bun ${CLI_PATH} task list --json --milestone-scope open`.cwd(TEST_DIR).quiet();
 			const output = JSON.parse(result.stdout.toString());
