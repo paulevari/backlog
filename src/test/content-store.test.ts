@@ -10,7 +10,7 @@ import { FileSystem } from "../file-system/operations.ts";
 import { parseTask } from "../markdown/parser.ts";
 import type { BacklogConfig, Decision, Document, Task } from "../types/index.ts";
 import { normalizeTaskIdentity } from "../utils/task-path.ts";
-import { createUniqueTestDir, getPlatformTimeout, safeCleanup, sleep } from "./test-utils.ts";
+import { createUniqueTestDir, getPlatformTimeout, retry, safeCleanup, sleep } from "./test-utils.ts";
 
 let TEST_DIR: string;
 
@@ -60,17 +60,40 @@ describe("ContentStore", () => {
 		await safeCleanup(TEST_DIR);
 	});
 
-	it("loads tasks, documents, and decisions during initialization", async () => {
+	it("loads tasks, documents, decisions, and drafts during initialization", async () => {
 		await filesystem.saveTask(sampleTask);
 		await filesystem.saveDecision(sampleDecision);
 		await filesystem.saveDocument(sampleDocument);
+		await filesystem.saveDraft({ ...sampleTask, id: "draft-1", title: "Sample Draft", status: "Draft" });
 
 		const snapshot = await store.ensureInitialized();
 
 		expect(snapshot.tasks).toHaveLength(1);
 		expect(snapshot.documents).toHaveLength(1);
 		expect(snapshot.decisions).toHaveLength(1);
+		expect(snapshot.drafts).toHaveLength(1);
 		expect(snapshot.tasks.map((task) => task.id)).toContain("TASK-1");
+		expect(snapshot.drafts.map((draft) => draft.id)).toContain("DRAFT-1");
+	});
+
+	it("publishes drafts created outside the store when watching", async () => {
+		store.dispose();
+		store = new ContentStore(filesystem, undefined, true);
+		await store.ensureInitialized();
+
+		const externalFilesystem = new FileSystem(TEST_DIR);
+		await externalFilesystem.saveDraft({ ...sampleTask, id: "draft-7", title: "Watched Draft", status: "Draft" });
+
+		await retry(
+			async () => {
+				const drafts = store.getSnapshot().drafts;
+				if (!drafts.some((draft) => draft.id === "DRAFT-7")) {
+					throw new Error("Draft not yet published from watcher");
+				}
+			},
+			30,
+			100,
+		);
 	});
 
 	it("propagates content load failures during initialization", async () => {
@@ -444,6 +467,7 @@ describe("ContentStore", () => {
 
 		expect(store.getSnapshot()).toEqual({
 			tasks: [expect.objectContaining({ title: "New task" })],
+			drafts: [],
 			documents: [expect.objectContaining({ title: "New document" })],
 			decisions: [expect.objectContaining({ title: "New decision" })],
 		});
@@ -2110,7 +2134,7 @@ describe("ContentStore", () => {
 		};
 		expect(watcherState.rootWatchersInitialized).toBe(true);
 		expect(watcherState.boundBacklogDir && resolve(watcherState.boundBacklogDir)).toBe(resolve(rootA.backlogDir));
-		expect(watcherState.rootWatchers).toHaveLength(3);
+		expect(watcherState.rootWatchers).toHaveLength(4);
 	});
 
 	it("keeps watcher binding best-effort and retries after initialization", async () => {
@@ -2430,7 +2454,7 @@ describe("ContentStore", () => {
 			expect(restartedWatcherState.boundBacklogDir && resolve(restartedWatcherState.boundBacklogDir)).toBe(
 				resolve(fixtureA.backlogDir),
 			);
-			expect(restartedWatcherState.rootWatchers).toHaveLength(3);
+			expect(restartedWatcherState.rootWatchers).toHaveLength(4);
 		} finally {
 			for (const gate of gates) gate.release();
 			unsubscribe();

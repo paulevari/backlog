@@ -34,6 +34,14 @@ interface TaskSearchEntity extends BaseSearchEntity {
 	readonly modifiedFiles: string[];
 }
 
+interface DraftSearchEntity extends BaseSearchEntity {
+	readonly type: "draft";
+	readonly draft: Task;
+	readonly idVariants: string[];
+	readonly dependencyIds: string[];
+	readonly modifiedFiles: string[];
+}
+
 interface DocumentSearchEntity extends BaseSearchEntity {
 	readonly type: "document";
 	readonly document: Document;
@@ -44,7 +52,7 @@ interface DecisionSearchEntity extends BaseSearchEntity {
 	readonly decision: Decision;
 }
 
-type SearchEntity = TaskSearchEntity | DocumentSearchEntity | DecisionSearchEntity;
+type SearchEntity = TaskSearchEntity | DraftSearchEntity | DocumentSearchEntity | DecisionSearchEntity;
 
 type NormalizedFilters = {
 	statuses?: string[];
@@ -120,6 +128,7 @@ export class SearchService {
 	private unsubscribe?: () => void;
 	private fuse: Fuse<SearchEntity> | null = null;
 	private tasks: TaskSearchEntity[] = [];
+	private drafts: DraftSearchEntity[] = [];
 	private documents: DocumentSearchEntity[] = [];
 	private decisions: DecisionSearchEntity[] = [];
 	private collection: SearchEntity[] = [];
@@ -150,6 +159,7 @@ export class SearchService {
 		this.fuse = null;
 		this.collection = [];
 		this.tasks = [];
+		this.drafts = [];
 		this.documents = [];
 		this.decisions = [];
 		this.initialized = false;
@@ -165,7 +175,7 @@ export class SearchService {
 
 		const trimmedQuery = query.trim();
 		const allowedTypes = new Set<SearchResultType>(
-			types && types.length > 0 ? types : ["task", "document", "decision"],
+			types && types.length > 0 ? types : ["task", "draft", "document", "decision"],
 		);
 		const normalizedFilters = this.normalizeFilters(filters);
 
@@ -202,7 +212,7 @@ export class SearchService {
 
 	private async initialize(): Promise<void> {
 		const snapshot = await this.store.ensureInitialized();
-		this.applySnapshot(snapshot.tasks, snapshot.documents, snapshot.decisions);
+		this.applySnapshot(snapshot.tasks, snapshot.documents, snapshot.decisions, snapshot.drafts);
 
 		if (!this.unsubscribe) {
 			this.unsubscribe = this.store.subscribe((event) => {
@@ -219,10 +229,10 @@ export class SearchService {
 			return;
 		}
 		this.version = event.version;
-		this.applySnapshot(event.snapshot.tasks, event.snapshot.documents, event.snapshot.decisions);
+		this.applySnapshot(event.snapshot.tasks, event.snapshot.documents, event.snapshot.decisions, event.snapshot.drafts);
 	}
 
-	private applySnapshot(tasks: Task[], documents: Document[], decisions: Decision[]): void {
+	private applySnapshot(tasks: Task[], documents: Document[], decisions: Decision[], drafts: Task[]): void {
 		this.tasks = tasks.map((task) => ({
 			id: task.id,
 			type: "task",
@@ -236,6 +246,17 @@ export class SearchService {
 			idVariants: createTaskIdVariants(task.id),
 			dependencyIds: (task.dependencies ?? []).flatMap((dependency) => createTaskIdVariants(dependency)),
 			modifiedFiles: task.modifiedFiles ?? [],
+		}));
+
+		this.drafts = drafts.map((draft) => ({
+			id: draft.id,
+			type: "draft",
+			title: draft.title,
+			bodyText: buildTaskBodyText(draft),
+			draft,
+			idVariants: createTaskIdVariants(draft.id),
+			dependencyIds: (draft.dependencies ?? []).flatMap((dependency) => createTaskIdVariants(dependency)),
+			modifiedFiles: draft.modifiedFiles ?? [],
 		}));
 
 		this.documents = documents.map((document) => ({
@@ -254,7 +275,7 @@ export class SearchService {
 			decision,
 		}));
 
-		this.collection = [...this.tasks, ...this.documents, ...this.decisions];
+		this.collection = [...this.tasks, ...this.drafts, ...this.documents, ...this.decisions];
 		this.rebuildFuse();
 	}
 
@@ -291,6 +312,15 @@ export class SearchService {
 		if (allowedTypes.has("task")) {
 			const tasks = this.applyTaskFilters(this.tasks, filters);
 			for (const entity of tasks) {
+				results.push(this.mapEntityToResult(entity));
+				if (limit && results.length >= limit) {
+					return results;
+				}
+			}
+		}
+
+		if (allowedTypes.has("draft")) {
+			for (const entity of this.drafts) {
 				results.push(this.mapEntityToResult(entity));
 				if (limit && results.length >= limit) {
 					return results;
@@ -483,6 +513,15 @@ export class SearchService {
 				type: "task",
 				score,
 				task: entity.task,
+				matches,
+			};
+		}
+
+		if (entity.type === "draft") {
+			return {
+				type: "draft",
+				score,
+				draft: entity.draft,
 				matches,
 			};
 		}

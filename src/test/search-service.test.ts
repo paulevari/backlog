@@ -7,6 +7,7 @@ import type {
 	DecisionSearchResult,
 	Document,
 	DocumentSearchResult,
+	DraftSearchResult,
 	SearchResult,
 	Task,
 	TaskSearchResult,
@@ -257,6 +258,78 @@ describe("SearchService", () => {
 		expect(filtered.map((result) => result.task.id)).toStrictEqual(["TASK-1"]);
 	});
 
+	it("indexes drafts and returns them as draft results", async () => {
+		const baseDraft: Task = {
+			...baseTask,
+			id: "draft-1",
+			title: "Centralized search draft",
+			status: "Draft",
+			rawContent: "## Description\nDraft capture of centralized search work",
+			modifiedFiles: undefined,
+		};
+
+		await filesystem.saveTask(baseTask);
+		await filesystem.saveDraft(baseDraft);
+
+		await search.ensureInitialized();
+
+		const results = search.search({ query: "centralized" });
+		const draftResult = results.find(isDraftResult);
+		expect(draftResult).toBeDefined();
+		expect(draftResult?.draft.id).toBe("DRAFT-1");
+		expect(results.find(isTaskResult)?.task.id).toBe("TASK-1");
+
+		const draftOnly = search.search({ query: "centralized", types: ["draft"] });
+		expect(draftOnly).toHaveLength(1);
+		expect(draftOnly[0]?.type).toBe("draft");
+	});
+
+	it("matches drafts by dependency id", async () => {
+		const dependentDraft: Task = {
+			...baseTask,
+			id: "draft-1",
+			title: "Dependent capture",
+			status: "Draft",
+			dependencies: ["task-9"],
+			rawContent: "## Description\nBlocked on an existing follow-up",
+			modifiedFiles: undefined,
+		};
+
+		await filesystem.saveDraft(dependentDraft);
+		await search.ensureInitialized();
+
+		const results = search.search({ query: "task-9", types: ["draft"] }).filter(isDraftResult);
+		expect(results).toHaveLength(1);
+		expect(results[0]?.draft.id).toBe("DRAFT-1");
+	});
+
+	it("refreshes draft results when a draft changes", async () => {
+		const baseDraft: Task = {
+			...baseTask,
+			id: "draft-1",
+			title: "Initial draft entry",
+			status: "Draft",
+			rawContent: "## Description\nInitial capture",
+			modifiedFiles: undefined,
+		};
+
+		await filesystem.saveDraft(baseDraft);
+		await search.ensureInitialized();
+
+		expect(search.search({ query: "Initial", types: ["draft"] })).toHaveLength(1);
+
+		await filesystem.saveDraft({
+			...baseDraft,
+			title: "Requalified draft entry",
+			rawContent: "## Description\nRequalified capture",
+		});
+
+		await waitForSearch(
+			async () => search.search({ query: "Requalified", types: ["draft"] }).filter(isDraftResult),
+			(results) => results.length === 1 && results[0]?.draft.title === "Requalified draft entry",
+		);
+	});
+
 	it("refreshes the index when content changes", async () => {
 		await filesystem.saveTask(baseTask);
 		await search.ensureInitialized();
@@ -284,6 +357,10 @@ describe("SearchService", () => {
 
 function isTaskResult(result: SearchResult): result is TaskSearchResult {
 	return result.type === "task";
+}
+
+function isDraftResult(result: SearchResult): result is DraftSearchResult {
+	return result.type === "draft";
 }
 
 function isDocumentResult(result: SearchResult): result is DocumentSearchResult {

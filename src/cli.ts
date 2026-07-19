@@ -47,6 +47,7 @@ import {
 	DOCUMENT_TYPE_VALUES,
 	type Document as DocType,
 	type DocumentSearchResult,
+	type DraftSearchResult,
 	isLocalEditableTask,
 	type Milestone,
 	type OrchestrationActorRole,
@@ -2019,13 +2020,13 @@ addHelpSchema(taskCmd.command("create [title]"), {
 	});
 
 addHelpSchema(program.command("search [query]"), {
-	reads: "Tasks, documents, and decisions from the configured backlog directory",
+	reads: "Tasks, drafts, documents, and decisions from the configured backlog directory",
 	required: [],
 	optional: [
 		{ name: "query", type: "String", description: "Fuzzy search text" },
 		{
 			name: "type",
-			type: choiceType(["task", "document", "decision"], { multiple: true }),
+			type: choiceType(["task", "draft", "document", "decision"], { multiple: true }),
 			description: "Result types",
 		},
 		{
@@ -2057,8 +2058,8 @@ addHelpSchema(program.command("search [query]"), {
 		`backlog search "crash" --task-type ${TASK_TYPE_EXAMPLE} --plain`,
 	],
 })
-	.description("search tasks, documents, and decisions using the shared index")
-	.option("--type <type>", "limit results to type (task, document, decision)", createMultiValueAccumulator())
+	.description("search tasks, drafts, documents, and decisions using the shared index")
+	.option("--type <type>", "limit results to type (task, draft, document, decision)", createMultiValueAccumulator())
 	.option(
 		"--task-type <type>",
 		"filter task results by configured task type (repeatable or comma-separated)",
@@ -2099,13 +2100,13 @@ addHelpSchema(program.command("search [query]"), {
 		const modifiedFileFilters = parseDelimitedStringList(options.modifiedFile);
 		const rawTaskTypes = parseDelimitedStringList(options.taskType) ?? [];
 		const rawTypes = options.type ? (Array.isArray(options.type) ? options.type : [options.type]) : undefined;
-		const allowedTypes: SearchResultType[] = ["task", "document", "decision"];
+		const allowedTypes: SearchResultType[] = ["task", "draft", "document", "decision"];
 		const types = rawTypes
 			? rawTypes
 					.map((value: string) => value.toLowerCase())
 					.filter((value: string): value is SearchResultType => {
 						if (!allowedTypes.includes(value as SearchResultType)) {
-							console.warn(`Ignoring unsupported type '${value}'. Supported: task, document, decision`);
+							console.warn(`Ignoring unsupported type '${value}'. Supported: task, draft, document, decision`);
 							return false;
 						}
 						return true;
@@ -2278,12 +2279,17 @@ function printSearchResults(results: SearchResult[]): void {
 	}
 
 	const tasks: TaskSearchResult[] = [];
+	const drafts: DraftSearchResult[] = [];
 	const documents: DocumentSearchResult[] = [];
 	const decisions: DecisionSearchResult[] = [];
 
 	for (const result of results) {
 		if (result.type === "task") {
 			tasks.push(result);
+			continue;
+		}
+		if (result.type === "draft") {
+			drafts.push(result);
 			continue;
 		}
 		if (result.type === "document") {
@@ -2305,6 +2311,20 @@ function printSearchResults(results: SearchResult[]): void {
 			const statusText = task.status ? ` (${task.status})` : "";
 			const priorityText = task.priority ? ` [${task.priority.toUpperCase()}]` : "";
 			console.log(`  ${task.id} - ${task.title}${statusText}${priorityText}${scoreText}`);
+		}
+		printed = true;
+	}
+
+	if (drafts.length > 0) {
+		if (printed) {
+			console.log("");
+		}
+		console.log("Drafts:");
+		for (const draftResult of drafts) {
+			const { draft } = draftResult;
+			const scoreText = formatScore(draftResult.score);
+			const priorityText = draft.priority ? ` [${draft.priority.toUpperCase()}]` : "";
+			console.log(`  ${draft.id} - ${draft.title}${priorityText}${scoreText}`);
 		}
 		printed = true;
 	}

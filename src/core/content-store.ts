@@ -13,16 +13,18 @@ import { matchesTaskTypeFilter } from "../utils/task-type-config.ts";
 
 interface ContentSnapshot {
 	tasks: Task[];
+	drafts: Task[];
 	documents: Document[];
 	decisions: Decision[];
 }
 
-type ContentStoreEventType = "ready" | "tasks" | "documents" | "decisions";
-type ContentCollection = "tasks" | "documents" | "decisions";
+type ContentStoreEventType = "ready" | "tasks" | "drafts" | "documents" | "decisions";
+type ContentCollection = "tasks" | "drafts" | "documents" | "decisions";
 
 export type ContentStoreEvent =
 	| { type: "ready"; snapshot: ContentSnapshot; version: number }
 	| { type: "tasks"; tasks: Task[]; snapshot: ContentSnapshot; version: number }
+	| { type: "drafts"; drafts: Task[]; snapshot: ContentSnapshot; version: number }
 	| { type: "documents"; documents: Document[]; snapshot: ContentSnapshot; version: number }
 	| { type: "decisions"; decisions: Decision[]; snapshot: ContentSnapshot; version: number }
 	| { type: "config"; config: BacklogConfig; snapshot: ContentSnapshot; version: number };
@@ -67,10 +69,12 @@ export class ContentStore {
 	private version = 0;
 
 	private readonly tasks = new Map<string, Task>();
+	private readonly drafts = new Map<string, Task>();
 	private readonly documents = new Map<string, Document>();
 	private readonly decisions = new Map<string, Decision>();
 
 	private cachedTasks: Task[] = [];
+	private cachedDrafts: Task[] = [];
 	private cachedDocuments: Document[] = [];
 	private cachedDecisions: Decision[] = [];
 
@@ -85,21 +89,25 @@ export class ContentStore {
 	private rootWatcherEpoch = 0;
 	private readonly contentRefreshGenerations: Record<ContentCollection, number> = {
 		tasks: 0,
+		drafts: 0,
 		documents: 0,
 		decisions: 0,
 	};
 	private readonly contentItemGenerations: Record<ContentCollection, Map<string, number>> = {
 		tasks: new Map(),
+		drafts: new Map(),
 		documents: new Map(),
 		decisions: new Map(),
 	};
 	private readonly contentItemVersions: Record<ContentCollection, Map<string, number>> = {
 		tasks: new Map(),
+		drafts: new Map(),
 		documents: new Map(),
 		decisions: new Map(),
 	};
 	private readonly contentItemPublicationRoots: Record<ContentCollection, Map<string, string>> = {
 		tasks: new Map(),
+		drafts: new Map(),
 		documents: new Map(),
 		decisions: new Map(),
 	};
@@ -261,6 +269,7 @@ export class ContentStore {
 	getSnapshot(): ContentSnapshot {
 		return {
 			tasks: this.cachedTasks.slice(),
+			drafts: this.cachedDrafts.slice(),
 			documents: this.cachedDocuments.slice(),
 			decisions: this.cachedDecisions.slice(),
 		};
@@ -300,6 +309,11 @@ export class ContentStore {
 
 		if (type === "tasks") {
 			this.emit({ type, tasks: snapshot.tasks, snapshot, version: this.version });
+			return;
+		}
+
+		if (type === "drafts") {
+			this.emit({ type, drafts: snapshot.drafts, snapshot, version: this.version });
 			return;
 		}
 
@@ -369,6 +383,7 @@ export class ContentStore {
 			const epoch = this.rootWatcherEpoch;
 			const attemptLoaded = await this.loadCurrentContent(epoch, (snapshot) => {
 				this.replaceTasks(snapshot.tasks);
+				this.replaceDrafts(snapshot.drafts);
 				this.replaceDocuments(snapshot.documents);
 				this.replaceDecisions(snapshot.decisions);
 			});
@@ -512,6 +527,7 @@ export class ContentStore {
 
 			const loaded = await this.loadCurrentContent(transitionEpoch, (snapshot) => {
 				this.replaceTasks(snapshot.tasks);
+				this.replaceDrafts(snapshot.drafts);
 				this.replaceDocuments(snapshot.documents);
 				this.replaceDecisions(snapshot.decisions);
 			});
@@ -527,6 +543,7 @@ export class ContentStore {
 			created.push(this.createTaskWatcher(epoch));
 			created.push(this.createDecisionWatcher(epoch));
 			created.push(await this.createDocumentWatcher(epoch));
+			created.push(await this.createDraftWatcher(epoch));
 			if (!this.isRootWatcherCurrent(epoch)) {
 				for (const watcher of created) watcher.stop();
 				return;
@@ -624,17 +641,20 @@ export class ContentStore {
 		const targetRoot = this.currentRoot();
 		const generations: Record<ContentCollection, number> = {
 			tasks: this.nextContentRefreshGeneration("tasks"),
+			drafts: this.nextContentRefreshGeneration("drafts"),
 			documents: this.nextContentRefreshGeneration("documents"),
 			decisions: this.nextContentRefreshGeneration("decisions"),
 		};
 		const before = this.getSnapshot();
 		const itemVersions: Record<ContentCollection, Map<string, number>> = {
 			tasks: new Map(this.contentItemVersions.tasks),
+			drafts: new Map(this.contentItemVersions.drafts),
 			documents: new Map(this.contentItemVersions.documents),
 			decisions: new Map(this.contentItemVersions.decisions),
 		};
-		const [tasks, documents, decisions] = await Promise.all([
+		const [tasks, drafts, documents, decisions] = await Promise.all([
 			this.loadTasksWithLoader(),
+			this.filesystem.listDrafts(),
 			this.filesystem.listDocuments(),
 			this.filesystem.listDecisions(),
 		]);
@@ -642,6 +662,7 @@ export class ContentStore {
 			!this.isRootWatcherCurrent(epoch) ||
 			targetRoot !== this.currentRoot() ||
 			!this.isContentRefreshCurrent("tasks", generations.tasks) ||
+			!this.isContentRefreshCurrent("drafts", generations.drafts) ||
 			!this.isContentRefreshCurrent("documents", generations.documents) ||
 			!this.isContentRefreshCurrent("decisions", generations.decisions)
 		) {
@@ -657,6 +678,16 @@ export class ContentStore {
 				itemVersions.tasks,
 				this.contentItemVersions.tasks,
 				this.contentItemPublicationRoots.tasks,
+				targetRoot,
+			),
+			drafts: this.mergeConcurrentChanges(
+				drafts,
+				before.drafts,
+				this.cachedDrafts,
+				(draft) => normalizeTaskId(draft.id),
+				itemVersions.drafts,
+				this.contentItemVersions.drafts,
+				this.contentItemPublicationRoots.drafts,
 				targetRoot,
 			),
 			documents: this.mergeConcurrentChanges(
@@ -882,6 +913,15 @@ export class ContentStore {
 		return { stop: () => watcher.close() };
 	}
 
+	private async createDraftWatcher(epoch: number): Promise<WatchHandle> {
+		const draftsDir = await this.filesystem.getDraftsDir();
+		const watcher: FSWatcher = watch(draftsDir, { recursive: false }, () => {
+			void this.enqueueRoot(epoch, async () => this.refreshDraftsFromDisk(undefined, epoch));
+		});
+		this.attachWatcherErrorHandler(watcher, "drafts");
+		return { stop: () => watcher.close() };
+	}
+
 	private async createDocumentWatcher(epoch: number): Promise<WatchHandle> {
 		const docsDir = this.filesystem.docsDir;
 		return this.createDirectoryWatcher(docsDir, epoch, async (eventType, absolutePath, relativePath) => {
@@ -1021,6 +1061,15 @@ export class ContentStore {
 		this.cachedTasks = sortByTaskId(Array.from(this.tasks.values()));
 	}
 
+	private replaceDrafts(drafts: Task[]): void {
+		this.invalidateContentItemGenerations("drafts");
+		this.drafts.clear();
+		for (const draft of drafts) {
+			this.drafts.set(draft.id, draft);
+		}
+		this.cachedDrafts = sortByTaskId(Array.from(this.drafts.values()));
+	}
+
 	private replaceDocuments(documents: Document[]): void {
 		this.invalidateContentItemGenerations("documents");
 		this.documents.clear();
@@ -1045,6 +1094,7 @@ export class ContentStore {
 		}
 
 		const originalSaveTask = this.filesystem.saveTask;
+		const originalSaveDraft = this.filesystem.saveDraft;
 		const originalSaveDocument = this.filesystem.saveDocument;
 		const originalSaveDecision = this.filesystem.saveDecision;
 
@@ -1054,6 +1104,13 @@ export class ContentStore {
 			await this.handleTaskWrite(task.id, owner);
 			return result;
 		}) as FileSystem["saveTask"];
+
+		this.filesystem.saveDraft = (async (task: Task): Promise<string> => {
+			const owner: PublicationOwner = { root: this.currentRoot() };
+			const result = await originalSaveDraft.call(this.filesystem, task);
+			await this.handleDraftWrite(task.id, owner);
+			return result;
+		}) as FileSystem["saveDraft"];
 
 		this.filesystem.saveDocument = (async (document: Document, subPath = ""): Promise<string> => {
 			const owner: PublicationOwner = { root: this.currentRoot() };
@@ -1070,9 +1127,19 @@ export class ContentStore {
 
 		this.restoreFilesystemPatch = () => {
 			this.filesystem.saveTask = originalSaveTask;
+			this.filesystem.saveDraft = originalSaveDraft;
 			this.filesystem.saveDocument = originalSaveDocument;
 			this.filesystem.saveDecision = originalSaveDecision;
 		};
+	}
+
+	private async handleDraftWrite(draftId: string, owner: PublicationOwner): Promise<void> {
+		if (!this.canPublishContent() || !this.isPublicationOwnerCurrent(owner)) {
+			return;
+		}
+		await this.enqueuePublication(owner, async () => {
+			await this.refreshDraftsFromDisk(draftId);
+		});
 	}
 
 	private async handleTaskWrite(taskId: string, owner: PublicationOwner): Promise<void> {
@@ -1328,6 +1395,42 @@ export class ContentStore {
 				return false;
 			this.replaceDocuments(merged);
 			this.notify("documents");
+			return false;
+		});
+	}
+
+	private async refreshDraftsFromDisk(expectedId?: string, epoch = this.rootWatcherEpoch): Promise<void> {
+		await this.reconcileOrSchedule(`draft:${expectedId ? normalizeTaskId(expectedId) : "*"}`, epoch, async () => {
+			const targetRoot = this.currentRoot();
+			const generation = this.nextContentRefreshGeneration("drafts");
+			const before = { items: this.cachedDrafts.slice(), versions: new Map(this.contentItemVersions.drafts) };
+			let drafts: Task[];
+			try {
+				drafts = await this.filesystem.listDrafts();
+			} catch {
+				return true;
+			}
+			if (expectedId && !drafts.some((draft) => taskIdsEqual(draft.id, expectedId))) return true;
+			if (
+				!this.isRootWatcherCurrent(epoch) ||
+				targetRoot !== this.currentRoot() ||
+				!this.isContentRefreshCurrent("drafts", generation)
+			)
+				return false;
+			const merged = this.mergeConcurrentChanges(
+				drafts,
+				before.items,
+				this.cachedDrafts,
+				(draft) => normalizeTaskId(draft.id),
+				before.versions,
+				this.contentItemVersions.drafts,
+				this.contentItemPublicationRoots.drafts,
+				targetRoot,
+			);
+			const sorted = sortByTaskId(merged);
+			if (!this.hasCollectionChanged(this.cachedDrafts, sorted, (a, b) => this.hasTaskChanged(a, b))) return false;
+			this.replaceDrafts(merged);
+			this.notify("drafts");
 			return false;
 		});
 	}

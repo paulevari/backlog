@@ -390,7 +390,7 @@ describe("CLI Integration", () => {
 			expect(docHelp).toContain("type: one of: readme, guide, specification, other");
 			expect(configHelp).toContain("key: one of: defaultEditor, projectName, defaultStatus");
 			expect(configHelp).toContain("value: String");
-			expect(searchHelp).toContain("type: one or more of: task, document, decision");
+			expect(searchHelp).toContain("type: one or more of: task, draft, document, decision");
 			expect(searchHelp).toContain("status: one of configured statuses: To Do, In Progress, Done");
 			expect(searchHelp).not.toContain("status: one of configured statuses: Draft, To Do, In Progress, Done");
 			expect(searchHelp).toContain("priority: one of configured priorities: High, Medium, Low");

@@ -19,7 +19,6 @@ import {
 	type TaskUpdateInput,
 } from "../types/index.ts";
 import { readAnnieFile, readAnnieTree, writeAnnieFile } from "../utils/annie-fs.ts";
-import { watchConfig } from "../utils/config-watcher.ts";
 import { resolveMilestoneInputForStorage } from "../utils/milestone-storage.ts";
 import { formatValidPriorityValues, resolvePriorityValue } from "../utils/priority-config.ts";
 import { formatValidStatuses, getCanonicalStatuses, getValidStatuses } from "../utils/status.ts";
@@ -798,6 +797,10 @@ export class BacklogServer {
 					return Response.json({ error: "type must be task, document, or decision" }, { status: 400 });
 				}
 				types = normalizedTypes;
+			}
+			if (!types) {
+				// The browser surface has not adopted draft results yet; keep its default scope unchanged.
+				types = ["task", "document", "decision"];
 			}
 
 			const filters: {

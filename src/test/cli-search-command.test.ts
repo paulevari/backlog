@@ -78,6 +78,29 @@ describe("CLI search command", () => {
 		await safeCleanup(TEST_DIR);
 	});
 
+	it("returns matching drafts labeled as drafts", async () => {
+		await $`bun ${cliPath} task create "Draftable search probe" --draft -d "Probe draft body"`.cwd(TEST_DIR).quiet();
+
+		const plain = await $`bun ${cliPath} search draftable --plain`.cwd(TEST_DIR).quiet();
+		expect(plain.exitCode).toBe(0);
+		const plainOut = plain.stdout.toString();
+		expect(plainOut).toContain("Drafts:");
+		expect(plainOut).toMatch(/DRAFT-\d+ - Draftable search probe/);
+
+		const json = await $`bun ${cliPath} search draftable --json`.cwd(TEST_DIR).quiet();
+		expect(json.exitCode).toBe(0);
+		const payload = JSON.parse(json.stdout.toString());
+		const draftResults = payload.results.filter((result: { type: string }) => result.type === "draft");
+		expect(draftResults).toHaveLength(1);
+		expect(draftResults[0].data.title).toBe("Draftable search probe");
+
+		const typed = await $`bun ${cliPath} search draftable --type draft --plain`.cwd(TEST_DIR).quiet();
+		expect(typed.exitCode).toBe(0);
+		const typedOut = typed.stdout.toString();
+		expect(typedOut).toContain("Drafts:");
+		expect(typedOut).not.toContain("Tasks:");
+	});
+
 	it("returns matching tasks, documents, and decisions in plain output", async () => {
 		const result = await $`bun ${cliPath} search central --plain`.cwd(TEST_DIR).quiet();
 

@@ -97,6 +97,14 @@ describe("BacklogServer search endpoint", () => {
 		await filesystem.saveTask(customPriorityTask);
 		await filesystem.saveDocument(baseDoc);
 		await filesystem.saveDecision(baseDecision);
+		await filesystem.saveDraft({
+			...baseTask,
+			id: "DRAFT-0001",
+			title: "Draft search entry",
+			status: "Draft",
+			description: "Alpha token appears here too",
+			modifiedFiles: undefined,
+		});
 
 		server = new BacklogServer(TEST_DIR);
 		await server.start(0, false);
@@ -141,6 +149,12 @@ describe("BacklogServer search endpoint", () => {
 		expect(finalTypes.has("task")).toBe(true);
 		expect(finalTypes.has("document")).toBe(true);
 		expect(finalTypes.has("decision")).toBe(true);
+	});
+
+	it("keeps draft results out of the browser search surface", async () => {
+		const results = await fetchJson<Array<{ type?: string }>>("/api/search?query=alpha");
+		expect(results.length).toBeGreaterThan(0);
+		expect(results.some((item) => item.type === "draft")).toBe(false);
 	});
 
 	it("filters search results by priority and status", async () => {

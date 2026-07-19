@@ -340,7 +340,7 @@ export interface DocumentUpdateInput {
 	tags?: string[];
 }
 
-export type SearchResultType = "task" | "document" | "decision";
+export type SearchResultType = "task" | "draft" | "document" | "decision";
 
 export type SearchPriorityFilter = string;
 
@@ -374,6 +374,13 @@ export interface TaskSearchResult {
 	matches?: SearchMatch[];
 }
 
+export interface DraftSearchResult {
+	type: "draft";
+	score: number | null;
+	draft: Task;
+	matches?: SearchMatch[];
+}
+
 export interface DocumentSearchResult {
 	type: "document";
 	score: number | null;
@@ -388,7 +395,7 @@ export interface DecisionSearchResult {
 	matches?: SearchMatch[];
 }
 
-export type SearchResult = TaskSearchResult | DocumentSearchResult | DecisionSearchResult;
+export type SearchResult = TaskSearchResult | DraftSearchResult | DocumentSearchResult | DecisionSearchResult;
 
 /**
  * Configuration for ID prefixes used in task files.

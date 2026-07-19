@@ -67,6 +67,7 @@ type DecisionSummaryJson = {
 
 type SearchResultJson =
 	| { type: "task"; data: TaskSummaryJson }
+	| { type: "draft"; data: TaskSummaryJson }
 	| { type: "document"; data: DocumentSummaryJson }
 	| { type: "decision"; data: DecisionSummaryJson };
 
@@ -186,6 +187,10 @@ export function searchJson(results: SearchResult[], projectRoot: string, docsDir
 			if (isLocalEditableTask(result.task)) {
 				publicResults.push({ type: "task", data: toTaskSummaryJson(result.task) });
 			}
+			continue;
+		}
+		if (result.type === "draft") {
+			publicResults.push({ type: "draft", data: toTaskSummaryJson(result.draft) });
 			continue;
 		}
 		if (result.type === "document") {

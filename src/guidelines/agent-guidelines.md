@@ -10,7 +10,7 @@ remains fully synchronized and up-to-date.
 ### Core Capabilities
 
 - ✅ **Task Management**: Create, edit, assign, prioritize, and track tasks with full metadata
-- ✅ **Search**: Fuzzy search across tasks, documents, and decisions with `backlog search`
+- ✅ **Search**: Fuzzy search across tasks, drafts, documents, and decisions with `backlog search`
 - ✅ **Acceptance Criteria**: Granular control with add/remove/check/uncheck by index
 - ✅ **Definition of Done checklists**: Per-task DoD items with add/remove/check/uncheck
 - ✅ **Board Visualization**: Terminal-based Kanban board (`backlog board`) and web UI (`backlog browser`)
