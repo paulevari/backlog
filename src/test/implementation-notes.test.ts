@@ -185,10 +185,10 @@ describe("Implementation Notes CLI", () => {
 				dependencies: [],
 				description: "Implement new feature",
 				acceptanceCriteriaItems: [
-					{ index: 1, text: "Feature works", checked: false },
-					{ index: 2, text: "Tests pass", checked: false },
+					{ index: 1, text: "Feature works", checked: true },
+					{ index: 2, text: "Tests pass", checked: true },
 				],
-				definitionOfDoneItems: [{ index: 1, text: "DoD item", checked: false }],
+				definitionOfDoneItems: [{ index: 1, text: "DoD item", checked: true }],
 			};
 			await core.createTask(task3, false);
 

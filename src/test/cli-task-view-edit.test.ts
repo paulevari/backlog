@@ -247,8 +247,8 @@ describe("CLI Integration", () => {
 					labels: [],
 					dependencies: [],
 					rawContent: "Original description",
-					acceptanceCriteria: [{ text: "Test criterion", done: false }],
-					definitionOfDone: [{ text: "Test DoD item", done: false }],
+					acceptanceCriteriaItems: [{ index: 1, text: "Test criterion", checked: false }],
+					definitionOfDoneItems: [{ index: 1, text: "Test DoD item", checked: false }],
 				},
 				false,
 			);
@@ -594,8 +594,8 @@ describe("CLI Integration", () => {
 					labels: ["yaml", "test"],
 					dependencies: ["task-1"],
 					rawContent: "Testing YAML preservation",
-					acceptanceCriteria: [{ text: "Test criterion", done: false }],
-					definitionOfDone: [{ text: "Test DoD item", done: false }],
+					acceptanceCriteriaItems: [{ index: 1, text: "Test criterion", checked: false }],
+					definitionOfDoneItems: [{ index: 1, text: "Test DoD item", checked: false }],
 				},
 				false,
 			);
