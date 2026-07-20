@@ -1733,7 +1733,7 @@ function getTaskReadOutputMode(options: { json?: boolean; plain?: boolean }): Re
 }
 
 taskCmd.hook("preSubcommand", (command, subcommand) => {
-	if (command.opts().json && !["list", "view"].includes(subcommand.name())) {
+	if (command.opts().json && !["list", "view", "validate"].includes(subcommand.name())) {
 		command.error("error: unknown option '--json'", { code: "commander.unknownOption", exitCode: 1 });
 	}
 });
@@ -1854,6 +1854,71 @@ taskCmd
 			}
 		},
 	);
+
+addHelpSchema(taskCmd.command("validate"), {
+	required: [],
+	optional: [
+		{ name: "dor", type: "Boolean", description: "Validate Definition of Ready" },
+		{ name: "json", type: "Boolean", description: "Output machine-readable JSON" },
+	],
+	writes: "None; validation only",
+	output: "Validation result with pass/fail status and individual checks",
+	examples: ["backlog task validate --dor {{TASK_ID:1}}", "backlog task validate --dor {{TASK_ID:1}} --json"],
+})
+	.option("--dor <taskId>", "validate Definition of Ready for the specified task")
+	.option("--json", "output machine-readable JSON")
+	.action(async (options: { dor?: string; json?: boolean }) => {
+		if (!options.dor) {
+			console.error("error: --dor <taskId> is required");
+			process.exitCode = 2;
+			return;
+		}
+
+		try {
+			const cwd = await requireProjectRoot();
+			const core = new Core(cwd);
+			const taskId = options.dor;
+
+			const task = await core.getTask(taskId);
+			if (!task) {
+				console.error(`Task not found: ${taskId}`);
+				process.exitCode = 2;
+				return;
+			}
+
+			const allTasks = await core.fs.listTasks();
+			const { validateDefinitionOfReady } = await import("./core/dor-validator.ts");
+			const result = validateDefinitionOfReady(task, allTasks);
+
+			const taskOptions = taskCmd.opts<{ json?: boolean }>();
+			const useJson = Boolean(options.json || taskOptions.json);
+
+			if (useJson) {
+				const output = {
+					schemaVersion: 1,
+					kind: "dor-validation",
+					taskId: task.id,
+					pass: result.pass,
+					checks: result.checks,
+				};
+				console.log(JSON.stringify(output, null, 2));
+			} else {
+				console.log(`Definition of Ready validation for ${task.id}:`);
+				console.log(result.pass ? "✓ PASS" : "✗ FAIL");
+				console.log("");
+				for (const check of result.checks) {
+					const status = check.pass ? "✓" : "✗";
+					const detail = check.detail ? ` (${check.detail})` : "";
+					console.log(`${status} ${check.name}${detail}`);
+				}
+			}
+
+			process.exitCode = result.pass ? 0 : 1;
+		} catch (error) {
+			console.error(error instanceof Error ? error.message : String(error));
+			process.exitCode = 2;
+		}
+	});
 
 addHelpSchema(taskCmd.command("create [title]"), {
 	required: [{ name: "title", type: "String", description: "Task title; prompted when omitted in interactive mode" }],
