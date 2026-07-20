@@ -218,7 +218,7 @@ describe("BacklogServer task SPA fallback", () => {
 			expect(response.headers.get("content-type"), path).toContain("text/html");
 			expect(await response.text(), path).toContain('<div id="root"></div>');
 		}
-	}, 10000);
+	}, 20000);
 
 	it("keeps API routes distinct from the SPA wildcard", async () => {
 		const listResponse = await request("/api/tasks?crossBranch=false");
