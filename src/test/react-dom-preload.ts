@@ -1,3 +1,8 @@
+// Neutralize global git config for all test git operations to prevent user's
+// ~/.gitignore from leaking into test fixture repositories.
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+
 import { JSDOM } from "jsdom";
 
 const DOM_GLOBALS = ["window", "document", "navigator"] as const;
