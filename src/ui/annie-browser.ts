@@ -306,7 +306,7 @@ export async function viewAnnieBrowser(options: { core: Core; onTabPress?: () =>
 
 	screen.key(["e", "E"], async () => {
 		const entry = getSelectedEntry();
-		if (!entry || entry.node.type !== "file") return;
+		if (entry?.node.type !== "file") return;
 
 		const filePath = join(cwd, ".annie", entry.node.path);
 		await options.core.openEditor(filePath, screen);
@@ -326,7 +326,7 @@ export async function viewAnnieBrowser(options: { core: Core; onTabPress?: () =>
 
 	screen.key(["o", "O"], () => {
 		const entry = getSelectedEntry();
-		if (!entry || entry.node.type !== "file") return;
+		if (entry?.node.type !== "file") return;
 		const filePath = join(cwd, ".annie", entry.node.path);
 		openInBrowser(filePath);
 	});

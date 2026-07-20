@@ -55,8 +55,8 @@ describe("annie-fs", () => {
 			const result = await readAnnieTree(tempDir);
 			expect(result.exists).toBe(true);
 			expect(result.tree).not.toBeNull();
-			expect(result.tree!.name).toBe(".annie");
-			expect(result.tree!.type).toBe("directory");
+			expect(result.tree?.name).toBe(".annie");
+			expect(result.tree?.type).toBe("directory");
 		});
 
 		it("sorts directories before files, alphabetically", async () => {
@@ -65,10 +65,10 @@ describe("annie-fs", () => {
 			writeFileSync(join(annieDir, "README.md"), "readme");
 
 			const result = await readAnnieTree(tempDir);
-			const children = result.tree!.children ?? [];
-			expect(children[0]!.name).toBe("docs");
-			expect(children[1]!.name).toBe("observations");
-			expect(children[2]!.name).toBe("README.md");
+			const children = result.tree?.children ?? [];
+			expect(children[0]?.name).toBe("docs");
+			expect(children[1]?.name).toBe("observations");
+			expect(children[2]?.name).toBe("README.md");
 		});
 
 		it("builds nested tree with correct relative paths", async () => {
@@ -76,12 +76,15 @@ describe("annie-fs", () => {
 			writeFileSync(join(annieDir, "docs/plans/my-plan.md"), "content");
 
 			const result = await readAnnieTree(tempDir);
-			const docs = result.tree!.children!.find((c) => c.name === "docs")!;
-			const plans = docs.children!.find((c) => c.name === "plans")!;
-			const file = plans.children!.find((c) => c.name === "my-plan.md")!;
+			const docs = result.tree?.children?.find((c) => c.name === "docs");
+			expect(docs).toBeDefined();
+			const plans = docs?.children?.find((c) => c.name === "plans");
+			expect(plans).toBeDefined();
+			const file = plans?.children?.find((c) => c.name === "my-plan.md");
+			expect(file).toBeDefined();
 
-			expect(file.path).toBe("docs/plans/my-plan.md");
-			expect(file.type).toBe("file");
+			expect(file?.path).toBe("docs/plans/my-plan.md");
+			expect(file?.type).toBe("file");
 		});
 	});
 

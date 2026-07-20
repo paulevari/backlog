@@ -182,17 +182,20 @@ describe("orchestration MCP surface", () => {
 		const materialized = await server.testInterface.callTool({
 			params: { name: "task_graph_materialize", arguments: graphInput },
 		});
-		const materializedText = (materialized.content?.[0] as { text: string }).text;
+		expect(materialized.content).toBeDefined();
+		const materializedText = (materialized.content[0] as { text: string }).text;
 		expect(materializedText).not.toStartWith("Validation");
 		const graph = JSON.parse(materializedText);
 		const viewed = await server.testInterface.callTool({
 			params: { name: "task_graph_view", arguments: { executionId: "exec-surface" } },
 		});
-		expect(JSON.parse((viewed.content?.[0] as { text: string }).text)).toEqual(graph);
+		expect(viewed.content).toBeDefined();
+		expect(JSON.parse((viewed.content[0] as { text: string }).text)).toEqual(graph);
 		const graphList = await server.testInterface.callTool({
 			params: { name: "task_graph_list", arguments: { nonTerminal: true } },
 		});
-		expect(JSON.parse((graphList.content?.[0] as { text: string }).text)).toEqual(
+		expect(graphList.content).toBeDefined();
+		expect(JSON.parse((graphList.content[0] as { text: string }).text)).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
 					executionId: "exec-surface",
