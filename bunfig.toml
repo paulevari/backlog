@@ -1,6 +1,6 @@
 [test]
-# Timeout for individual tests - increased for Windows compatibility
-timeout = "10s"
+# Timeout for individual tests - increased for SPA bundle compilation and Windows compatibility
+timeout = "30s"
 preload = ["./src/test/react-dom-preload.ts"]
 
 # Reduce memory usage during test runs to prevent WSL2 crashes
