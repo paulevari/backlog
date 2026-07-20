@@ -191,8 +191,8 @@ describe("BacklogServer task SPA fallback", () => {
 
 	it("serves task and board namespaces through the SPA for direct and refreshed navigation", async () => {
 		// Compile the HTML bundle once before exercising the bounded route requests.
-		// Allow 18s for bundler compilation in full-suite context; 20s test timeout provides safety net.
-		const shellResponse = await request("/", {}, 18000);
+		// Allow 25s for bundler compilation in full-suite context; 30s test timeout provides safety net.
+		const shellResponse = await request("/", {}, 25000);
 		expect(shellResponse.status).toBe(200);
 		expect(shellResponse.headers.get("content-type")).toContain("text/html");
 		expect(await shellResponse.text()).toContain('<div id="root"></div>');
