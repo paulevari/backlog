@@ -292,6 +292,64 @@ describe("Definition of Ready validation", () => {
 			expect(depsCheck.detail).toContain("TASK-999");
 		});
 
+		it("should pass when dependency is in completed tasks", async () => {
+			const core = new Core(TEST_DIR);
+			const milestone = await core.filesystem.createMilestone("Test Milestone");
+
+			const createResult = await runCli([
+				"task",
+				"create",
+				"Completed Dependency",
+				"--desc",
+				"A completed task",
+				"--ac",
+				"Done",
+				"--dod",
+				"Complete",
+				"-m",
+				"Test Milestone",
+				"-l",
+				"complexity:low",
+				"-s",
+				"Done",
+				"--final-summary",
+				"Task completed",
+			]);
+			expect(createResult.exitCode).toBe(0);
+
+			const completedTaskId = createResult.stdout.match(/Created task (TASK-\d+)/)?.[1];
+			expect(completedTaskId).toBeDefined();
+
+			await runCli(["task", "complete", completedTaskId as string]);
+
+			await core.createTask(
+				{
+					id: "task-depends-on-completed",
+					title: "Task Depending on Completed",
+					description: "This task depends on a completed task",
+					status: "Backlog",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: ["complexity:medium"],
+					dependencies: [completedTaskId as string],
+					milestone: milestone.id,
+					acceptanceCriteriaItems: [{ index: 1, text: "First criterion", checked: false }],
+					definitionOfDoneItems: [{ index: 1, text: "First DoD item", checked: false }],
+					rawContent: "Depends on completed",
+				},
+				false,
+			);
+
+			const result = await runCli(["task", "validate", "--dor", "TASK-depends-on-completed", "--json"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+
+			const output = JSON.parse(result.stdout);
+			expect(output.pass).toBe(true);
+			const depsCheck = output.checks.find((c: { name: string }) => c.name === "dependencies");
+			expect(depsCheck).toBeDefined();
+			expect(depsCheck.pass).toBe(true);
+		});
+
 		it("should return exit code 2 for unknown task", async () => {
 			const result = await runCli(["task", "validate", "--dor", "TASK-nonexistent", "--json"]);
 			expect(result.exitCode).toBe(2);

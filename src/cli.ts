@@ -1886,7 +1886,7 @@ addHelpSchema(taskCmd.command("validate"), {
 				return;
 			}
 
-			const allTasks = await core.fs.listTasks();
+			const allTasks = await core.loadTasks(undefined, undefined, { includeCompleted: true });
 			const { validateDefinitionOfReady } = await import("./core/dor-validator.ts");
 			const result = validateDefinitionOfReady(task, allTasks);
 
