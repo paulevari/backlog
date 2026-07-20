@@ -29,6 +29,8 @@ function sampleTask(id: string, title: string, status = "To Do"): Task {
 		labels: [],
 		dependencies: [],
 		rawContent: "## Description\n\nWatcher fixture",
+		acceptanceCriteria: [{ text: "Test criterion", done: false }],
+		definitionOfDone: [{ text: "Test DoD item", done: false }],
 	};
 }
 

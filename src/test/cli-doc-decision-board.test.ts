@@ -357,6 +357,8 @@ describe("CLI Integration", () => {
 				labels: [],
 				dependencies: [],
 				rawContent: "from remote",
+				acceptanceCriteria: [{ text: "Test criterion", done: false }],
+				definitionOfDone: [{ text: "Test DoD item", done: false }],
 			} as Task;
 
 			await core.createTask(task, true);

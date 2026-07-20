@@ -188,6 +188,7 @@ describe("Implementation Notes CLI", () => {
 					{ index: 1, text: "Feature works", checked: false },
 					{ index: 2, text: "Tests pass", checked: false },
 				],
+				definitionOfDoneItems: [{ index: 1, text: "DoD item", checked: false }],
 			};
 			await core.createTask(task3, false);
 
