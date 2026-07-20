@@ -489,7 +489,7 @@ describe("Task selection filters", () => {
 			expect(taskIds).not.toContain("TASK-3");
 		});
 
-		it("T-105b: core filter engine should support require_any (OR) label matching", async () => {
+		it("T-105b: --any-label should support require_any (OR) label matching", async () => {
 			const core = new Core(TEST_DIR);
 
 			await core.createTask(
@@ -534,15 +534,36 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const tasks = await core.queryTasks({
-				filters: { labels: ["a", "b"] },
-				includeCrossBranch: false,
-			});
+			await core.createTask(
+				{
+					id: "task-4",
+					title: "Has Unrelated Label",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: ["c"],
+					dependencies: [],
+					rawContent: "Has c",
+				},
+				false,
+			);
 
-			const taskIds = tasks.map((t) => t.id);
+			const result = await $`bun ${CLI_PATH} task list --json --any-label a,b`.cwd(TEST_DIR).quiet();
+			const output = JSON.parse(result.stdout.toString());
+
+			expect(output.schemaVersion).toBe(1);
+			const taskIds = output.tasks.map((t: { id: string }) => t.id);
 			expect(taskIds).toContain("TASK-1");
 			expect(taskIds).toContain("TASK-2");
 			expect(taskIds).toContain("TASK-3");
+			expect(taskIds).not.toContain("TASK-4");
+		});
+
+		it("should reject combining --labels with --any-label", async () => {
+			const result = await $`bun ${CLI_PATH} task list --json --labels a --any-label b`.cwd(TEST_DIR).nothrow().quiet();
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr.toString()).toContain("--any-label cannot be combined with --labels");
 		});
 	});
 

@@ -2445,6 +2445,11 @@ addHelpSchema(taskCmd.command("list"), {
 			type: "Comma-separated strings",
 			description: "Require every listed label; repeat --labels or use label1,label2",
 		},
+		{
+			name: "any-label",
+			type: "Comma-separated strings",
+			description: "Require at least one listed label; repeat --any-label or use label1,label2",
+		},
 		{ name: "search", type: "String", description: "Search task title, description, notes, comments, and metadata" },
 		{ name: "deps-satisfied", type: "Boolean", description: "Only tasks with all dependencies done or missing" },
 		{ name: "exclude-parents", type: "Boolean", description: "Exclude tasks that have children" },
@@ -2485,6 +2490,11 @@ addHelpSchema(taskCmd.command("list"), {
 		"filter tasks by labels; require every comma-separated label (repeatable)",
 		createMultiValueAccumulator(),
 	)
+	.option(
+		"--any-label <labels>",
+		"filter tasks by labels; require at least one comma-separated label (repeatable)",
+		createMultiValueAccumulator(),
+	)
 	.option("--search <query>", "search task title, description, notes, comments, and metadata")
 	.option("--deps-satisfied", "only tasks with all dependencies done or missing")
 	.option("--exclude-parents", "exclude tasks that have children")
@@ -2509,6 +2519,12 @@ addHelpSchema(taskCmd.command("list"), {
 		}
 		if (options.assignee && options.unassigned) {
 			console.error("--unassigned cannot be combined with --assignee.");
+			process.exitCode = 1;
+			cleanup();
+			return;
+		}
+		if (options.labels && options.anyLabel) {
+			console.error("--any-label cannot be combined with --labels.");
 			process.exitCode = 1;
 			cleanup();
 			return;
@@ -2563,6 +2579,10 @@ addHelpSchema(taskCmd.command("list"), {
 		}
 
 		const labelFilters = parseDelimitedStringList(options.labels) ?? [];
+		const anyLabelFilters = parseDelimitedStringList(options.anyLabel) ?? [];
+		if (anyLabelFilters.length > 0) {
+			baseFilters.labels = anyLabelFilters;
+		}
 		const searchQuery = typeof options.search === "string" ? options.search.trim() : "";
 		let taskLimit: number | undefined;
 		if (options.limit !== undefined) {
@@ -2716,6 +2736,7 @@ addHelpSchema(taskCmd.command("list"), {
 			activeFilters.push(`Type: ${taskTypes.join(", ")}`);
 		}
 		if (labelFilters.length > 0) activeFilters.push(`Labels: ${labelFilters.join(", ")}`);
+		if (anyLabelFilters.length > 0) activeFilters.push(`Any label: ${anyLabelFilters.join(", ")}`);
 		if (searchQuery) activeFilters.push(`Search: ${searchQuery}`);
 		if (taskLimit !== undefined) activeFilters.push(`Limit: ${taskLimit}`);
 		if (options.sort) activeFilters.push(`Sort: ${options.sort}`);
@@ -2733,7 +2754,7 @@ addHelpSchema(taskCmd.command("list"), {
 			priority?: string;
 			sort?: string;
 			labels?: string[];
-			labelMatch?: "all";
+			labelMatch?: "all" | "any";
 			searchQuery?: string;
 			title?: string;
 			filterDescription?: string;
@@ -2747,8 +2768,8 @@ addHelpSchema(taskCmd.command("list"), {
 			type: Array.isArray(baseFilters.type) ? baseFilters.type : baseFilters.type ? [baseFilters.type] : undefined,
 			priority: baseFilters.priority,
 			sort: options.sort,
-			labels: labelFilters,
-			labelMatch: labelFilters.length > 0 ? "all" : undefined,
+			labels: labelFilters.length > 0 ? labelFilters : anyLabelFilters,
+			labelMatch: labelFilters.length > 0 ? "all" : anyLabelFilters.length > 0 ? "any" : undefined,
 			title,
 			filterDescription,
 			parentTaskId: parentId,
