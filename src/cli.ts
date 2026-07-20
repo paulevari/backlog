@@ -1858,7 +1858,7 @@ taskCmd
 addHelpSchema(taskCmd.command("validate"), {
 	required: [],
 	optional: [
-		{ name: "dor", type: "Boolean", description: "Validate Definition of Ready" },
+		{ name: "dor", type: "Task ID", description: "Task to validate for Definition of Ready" },
 		{ name: "json", type: "Boolean", description: "Output machine-readable JSON" },
 	],
 	writes: "None; validation only",
