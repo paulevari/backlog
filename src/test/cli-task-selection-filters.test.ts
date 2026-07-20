@@ -505,6 +505,89 @@ describe("Task selection filters", () => {
 
 			expect(taskIds).toEqual(["TASK-1", "TASK-2"]);
 		});
+
+		it("should not redirect requested milestones after another filter removes their tasks", async () => {
+			const core = new Core(TEST_DIR);
+			const releaseAlpha = await core.filesystem.createMilestone("Release Alpha");
+			const releaseBeta = await core.filesystem.createMilestone("Release Beta");
+			const releaseGamma = await core.filesystem.createMilestone("Release Gamma");
+
+			for (const task of [
+				{ id: "task-1", status: "Done", milestone: releaseAlpha.id },
+				{ id: "task-2", status: "Done", milestone: releaseBeta.id },
+				{ id: "task-3", status: "To Do", milestone: releaseGamma.id },
+			]) {
+				await core.createTask(
+					{
+						...task,
+						title: `Task in ${task.milestone}`,
+						assignee: [],
+						createdDate: "2025-06-08",
+						labels: [],
+						dependencies: [],
+						rawContent: `Task in ${task.milestone}`,
+					},
+					false,
+				);
+			}
+
+			const result =
+				await $`bun ${CLI_PATH} task list --json --status "To Do" --milestone "Release Alpha" --milestone "Release Beta"`
+					.cwd(TEST_DIR)
+					.quiet();
+			const output = JSON.parse(result.stdout.toString());
+
+			expect(output.tasks).toEqual([]);
+		});
+
+		it("should support repeated milestone IDs", async () => {
+			const core = new Core(TEST_DIR);
+			const releaseAlpha = await core.filesystem.createMilestone("Release Alpha");
+			const releaseBeta = await core.filesystem.createMilestone("Release Beta");
+			const releaseGamma = await core.filesystem.createMilestone("Release Gamma");
+
+			for (const task of [
+				{ id: "task-1", milestone: releaseAlpha.id },
+				{ id: "task-2", milestone: releaseBeta.id },
+				{ id: "task-3", milestone: releaseGamma.id },
+			]) {
+				await core.createTask(
+					{
+						...task,
+						title: `Task in ${task.milestone}`,
+						status: "To Do",
+						assignee: [],
+						createdDate: "2025-06-08",
+						labels: [],
+						dependencies: [],
+						rawContent: `Task in ${task.milestone}`,
+					},
+					false,
+				);
+			}
+
+			const result =
+				await $`bun ${CLI_PATH} task list --json --milestone ${releaseAlpha.id} --milestone ${releaseBeta.id}`
+					.cwd(TEST_DIR)
+					.quiet();
+			const output = JSON.parse(result.stdout.toString());
+			const taskIds = output.tasks.map((task: { id: string }) => task.id);
+
+			expect(taskIds).toEqual(["TASK-1", "TASK-2"]);
+		});
+
+		it("should require non-interactive output for compound selection filters", async () => {
+			const result = await $`bun ${CLI_PATH} task list --status "To Do" --status Done`.cwd(TEST_DIR).nothrow().quiet();
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr.toString()).toContain("Compound task selection filters require --json or --plain");
+
+			const plainResult = await $`bun ${CLI_PATH} task list --plain --status "To Do" --status Done`
+				.cwd(TEST_DIR)
+				.nothrow()
+				.quiet();
+			expect(plainResult.exitCode).toBe(0);
+		});
 	});
 
 	describe("label matching modes", () => {
@@ -513,6 +596,7 @@ describe("Task selection filters", () => {
 			const help = result.stdout.toString().replace(/\s+/g, " ");
 
 			expect(help).toContain("may be combined with --labels; both label groups must match");
+			expect(help).toContain("Compound filters require --json or --plain");
 		});
 
 		it("T-105: should support require_all (AND) label matching", async () => {

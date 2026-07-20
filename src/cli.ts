@@ -304,9 +304,12 @@ function filterTasksByMilestones(tasks: Task[], milestoneFilters: string[], mile
 		return tasks;
 	}
 	const resolveMilestoneFilterValue = createMilestoneFilterValueResolver(milestones);
-	const milestoneValues = tasks.map((task) => resolveMilestoneFilterValue(task.milestone ?? ""));
+	const milestoneValues = milestones.map((milestone) => milestone.title);
 	const selectedMilestones = new Set(
-		milestoneFilters.map((milestone) => resolveClosestMilestoneFilterValue(milestone, milestoneValues)).filter(Boolean),
+		milestoneFilters
+			.map((milestone) => resolveMilestoneFilterValue(milestone))
+			.map((milestone) => resolveClosestMilestoneFilterValue(milestone, milestoneValues))
+			.filter(Boolean),
 	);
 	return tasks.filter((task) =>
 		selectedMilestones.has(normalizeMilestoneFilterValue(resolveMilestoneFilterValue(task.milestone ?? ""))),
@@ -583,6 +586,7 @@ if (process.platform === "win32") {
 const hasInteractiveTTY = Boolean(process.stdout.isTTY && process.stdin.isTTY);
 const shouldAutoPlain = !hasInteractiveTTY;
 const plainFlagInArgv = process.argv.includes("--plain");
+const jsonFlagInArgv = process.argv.includes("--json");
 
 function isPlainRequested(options?: { plain?: boolean }): boolean {
 	return Boolean(options?.plain || plainFlagInArgv);
@@ -2499,7 +2503,7 @@ addHelpSchema(taskCmd.command("list"), {
 		'backlog task list --labels frontend,bug --search "login" --limit 10 --plain',
 	],
 })
-	.description("list tasks grouped by status")
+	.description("list tasks grouped by status. Compound filters require --json or --plain.")
 	.option(
 		"-s, --status <status>",
 		"filter tasks by status (repeatable or comma-separated, case-insensitive)",
@@ -2566,6 +2570,18 @@ addHelpSchema(taskCmd.command("list"), {
 		const milestoneFilters = toStringArray(options.milestone)
 			.map((milestone) => milestone.trim())
 			.filter(Boolean);
+		const labelFilters = parseDelimitedStringList(options.labels) ?? [];
+		const anyLabelFilters = parseDelimitedStringList(options.anyLabel) ?? [];
+		const hasCompoundSelection =
+			statusFilters.length > 1 ||
+			milestoneFilters.length > 1 ||
+			(labelFilters.length > 0 && anyLabelFilters.length > 0);
+		if (!jsonFlagInArgv && !plainFlagInArgv && hasCompoundSelection) {
+			console.error("Compound task selection filters require --json or --plain.");
+			process.exitCode = 1;
+			cleanup();
+			return;
+		}
 		const baseFilters: TaskListFilter = {};
 		if (statusFilters.length === 1) {
 			baseFilters.status = statusFilters[0];
@@ -2615,8 +2631,6 @@ addHelpSchema(taskCmd.command("list"), {
 			baseFilters.milestoneScope = "open";
 		}
 
-		const labelFilters = parseDelimitedStringList(options.labels) ?? [];
-		const anyLabelFilters = parseDelimitedStringList(options.anyLabel) ?? [];
 		if (anyLabelFilters.length > 0) {
 			baseFilters.labels = anyLabelFilters;
 		}
@@ -2837,9 +2851,6 @@ addHelpSchema(taskCmd.command("list"), {
 		if (parentId) {
 			interactiveLoaderFilters.parentTaskId = parentId;
 		}
-		if (labelFilters.length > 0 && anyLabelFilters.length > 0) {
-			interactiveLoaderFilters.labels = anyLabelFilters;
-		}
 		await runUnifiedView({
 			core,
 			initialView: "task-list",
@@ -2882,16 +2893,6 @@ addHelpSchema(taskCmd.command("list"), {
 				}
 
 				let filtered = sortedTasks;
-				if (statusFilters.length > 1) {
-					filtered = filtered.filter((task) => taskMatchesAnyStatus(task, statusFilters));
-				}
-				if (milestoneFilters.length > 1) {
-					const [activeMilestones, archivedMilestones] = await Promise.all([
-						core.filesystem.listMilestones(),
-						core.filesystem.listArchivedMilestones(),
-					]);
-					filtered = filterTasksByMilestones(filtered, milestoneFilters, [...activeMilestones, ...archivedMilestones]);
-				}
 				if (parentId) {
 					filtered = filtered.filter((task) => task.parentTaskId && taskIdsEqual(parentId, task.parentTaskId));
 				}
