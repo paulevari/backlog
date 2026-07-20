@@ -898,5 +898,74 @@ describe("Task selection filters", () => {
 			expect(scopedDoneTaskIds).toContain("TASK-4");
 			expect(scopedDoneTaskIds).not.toContain("TASK-2");
 		});
+
+		it("T-104b: --milestone-scope open groups id-form and title-form references to the same milestone into one group", async () => {
+			const core = new Core(TEST_DIR);
+			const milestone = await core.filesystem.createMilestone("Mixed Form Milestone");
+
+			await core.createTask(
+				{
+					id: "task-1",
+					title: "Done task referencing milestone by id",
+					status: "Done",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					milestone: milestone.id,
+					rawContent: "Done but referenced by id",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-2",
+					title: "To Do task referencing milestone by title",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					milestone: milestone.title,
+					rawContent: "To Do but referenced by title",
+				},
+				false,
+			);
+
+			await core.createTask(
+				{
+					id: "task-3",
+					title: "Unrelated task with no milestone",
+					status: "To Do",
+					assignee: [],
+					createdDate: "2025-06-08",
+					labels: [],
+					dependencies: [],
+					rawContent: "no milestone",
+				},
+				false,
+			);
+
+			const openResult = await runCli(["task", "list", "--json", "--milestone-scope", "open"]);
+			expect(openResult.exitCode, openResult.stderr).toBe(0);
+			const openTaskIds = JSON.parse(openResult.stdout).tasks.map((t: { id: string }) => t.id);
+			expect(openTaskIds).toContain("TASK-1");
+			expect(openTaskIds).toContain("TASK-2");
+			expect(openTaskIds).not.toContain("TASK-3");
+
+			const scopedDoneResult = await runCli([
+				"task",
+				"list",
+				"--json",
+				"--status",
+				"Done",
+				"--milestone-scope",
+				"open",
+			]);
+			expect(scopedDoneResult.exitCode, scopedDoneResult.stderr).toBe(0);
+			const scopedDoneTaskIds = JSON.parse(scopedDoneResult.stdout).tasks.map((t: { id: string }) => t.id);
+			expect(scopedDoneTaskIds).toContain("TASK-1");
+		});
 	});
 });

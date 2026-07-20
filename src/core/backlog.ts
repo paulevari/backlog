@@ -555,14 +555,16 @@ export class Core {
 			result = result.filter((task) => !parentIds.has(canonicalTaskId(task.id)));
 		}
 		if (filters.milestoneScope === "open") {
+			const resolveGroupKey = (raw: string): string => resolveMilestoneFilterValue?.(raw) ?? raw;
 			const completedMilestones = new Set<string>();
 			const milestoneTasksMap = new Map<string, Task[]>();
 			for (const task of tasks) {
 				if (task.milestone) {
-					if (!milestoneTasksMap.has(task.milestone)) {
-						milestoneTasksMap.set(task.milestone, []);
+					const groupKey = resolveGroupKey(task.milestone);
+					if (!milestoneTasksMap.has(groupKey)) {
+						milestoneTasksMap.set(groupKey, []);
 					}
-					milestoneTasksMap.get(task.milestone)?.push(task);
+					milestoneTasksMap.get(groupKey)?.push(task);
 				}
 			}
 			for (const [milestoneId, milestoneTasks] of milestoneTasksMap.entries()) {
@@ -577,7 +579,7 @@ export class Core {
 				if (!task.milestone) {
 					return false;
 				}
-				return !completedMilestones.has(task.milestone);
+				return !completedMilestones.has(resolveGroupKey(task.milestone));
 			});
 		}
 		return result;
@@ -668,12 +670,13 @@ export class Core {
 		const { filters, query, limit } = options;
 		const trimmedQuery = query?.trim();
 		const includeCrossBranch = options.includeCrossBranch ?? true;
-		const milestoneResolverPromise = filters?.milestone
-			? Promise.all([this.fs.listMilestones(), this.fs.listArchivedMilestones()]).then(
-					([activeMilestones, archivedMilestones]) =>
-						createMilestoneFilterValueResolver([...activeMilestones, ...archivedMilestones]),
-				)
-			: undefined;
+		const milestoneResolverPromise =
+			filters?.milestone || filters?.milestoneScope === "open"
+				? Promise.all([this.fs.listMilestones(), this.fs.listArchivedMilestones()]).then(
+						([activeMilestones, archivedMilestones]) =>
+							createMilestoneFilterValueResolver([...activeMilestones, ...archivedMilestones]),
+					)
+				: undefined;
 
 		const applyFiltersAndLimit = async (collection: Task[]): Promise<Task[]> => {
 			const resolveMilestoneFilterValue = milestoneResolverPromise ? await milestoneResolverPromise : undefined;
