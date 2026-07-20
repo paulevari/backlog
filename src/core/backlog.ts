@@ -67,6 +67,7 @@ import {
 	stringArraysEqual,
 	validateDependencies,
 } from "../utils/task-builders.ts";
+import { resolveDependencies } from "../utils/task-dependencies.ts";
 import { resolveTaskById } from "../utils/task-id.ts";
 import {
 	getTaskLifecycleNotifier,
@@ -537,13 +538,10 @@ export class Core {
 				if (!task.dependencies || task.dependencies.length === 0) {
 					return true;
 				}
-				return task.dependencies.every((depId) => {
+				const { resolvable } = resolveDependencies(task.dependencies, tasks);
+				return resolvable.every((depId) => {
 					const depStatus = statusByCanonicalId.get(canonicalTaskId(depId));
-					// Missing or deleted dependency IDs are non-blocking.
-					if (depStatus === undefined) {
-						return true;
-					}
-					return isDoneStatus(depStatus);
+					return depStatus !== undefined && isDoneStatus(depStatus);
 				});
 			});
 		}

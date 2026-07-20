@@ -1,5 +1,5 @@
 import type { Task } from "../types/index.ts";
-import { canonicalTaskId } from "../utils/task-id.ts";
+import { resolveDependencies } from "../utils/task-dependencies.ts";
 
 export interface DorCheckResult {
 	name: string;
@@ -50,26 +50,12 @@ export function validateDefinitionOfReady(task: Task, allTasks: Task[]): DorVali
 		detail: hasMilestone ? undefined : "No milestone assigned",
 	});
 
-	const taskIdMap = new Map<string, Task>();
-	for (const t of allTasks) {
-		taskIdMap.set(canonicalTaskId(t.id), t);
-	}
-
-	const unresolvedDeps: string[] = [];
-	if (task.dependencies && task.dependencies.length > 0) {
-		for (const depId of task.dependencies) {
-			const canonical = canonicalTaskId(depId);
-			if (!taskIdMap.has(canonical)) {
-				unresolvedDeps.push(depId);
-			}
-		}
-	}
-
-	const depsResolvable = unresolvedDeps.length === 0;
+	const { unresolvable } = resolveDependencies(task.dependencies ?? [], allTasks);
+	const depsResolvable = unresolvable.length === 0;
 	checks.push({
 		name: "dependencies",
 		pass: depsResolvable,
-		detail: depsResolvable ? undefined : `Unresolvable dependencies: ${unresolvedDeps.join(", ")}`,
+		detail: depsResolvable ? undefined : `Unresolvable dependencies: ${unresolvable.join(", ")}`,
 	});
 
 	const pass = checks.every((check) => check.pass);
