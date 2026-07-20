@@ -76,7 +76,11 @@ import {
 	type McpClientSetupKey,
 	runMcpClientSetupCommand,
 } from "./utils/mcp-client-setup.ts";
-import { createMilestoneFilterValueResolver, resolveClosestMilestoneFilterValue } from "./utils/milestone-filter.ts";
+import {
+	createMilestoneFilterValueResolver,
+	normalizeMilestoneFilterValue,
+	resolveClosestMilestoneFilterValue,
+} from "./utils/milestone-filter.ts";
 import { resolveMilestoneInputForStorage } from "./utils/milestone-storage.ts";
 import { hasAnyPrefix } from "./utils/prefix-config.ts";
 import { formatValidPriorityValues, getPriorityOptions, resolvePriorityValue } from "./utils/priority-config.ts";
@@ -288,6 +292,25 @@ function taskMatchesAllLabels(task: Task, labels: string[]): boolean {
 	}
 	const taskLabels = new Set(labelsToLower(task.labels ?? []));
 	return requiredLabels.every((label) => taskLabels.has(label));
+}
+
+function taskMatchesAnyStatus(task: Task, statuses: string[]): boolean {
+	const allowedStatuses = new Set(statuses.map((status) => status.trim().toLowerCase()).filter(Boolean));
+	return allowedStatuses.size === 0 || allowedStatuses.has((task.status ?? "").trim().toLowerCase());
+}
+
+function filterTasksByMilestones(tasks: Task[], milestoneFilters: string[], milestones: Milestone[]): Task[] {
+	if (milestoneFilters.length === 0) {
+		return tasks;
+	}
+	const resolveMilestoneFilterValue = createMilestoneFilterValueResolver(milestones);
+	const milestoneValues = tasks.map((task) => resolveMilestoneFilterValue(task.milestone ?? ""));
+	const selectedMilestones = new Set(
+		milestoneFilters.map((milestone) => resolveClosestMilestoneFilterValue(milestone, milestoneValues)).filter(Boolean),
+	);
+	return tasks.filter((task) =>
+		selectedMilestones.has(normalizeMilestoneFilterValue(resolveMilestoneFilterValue(task.milestone ?? ""))),
+	);
 }
 
 function formatPlainTaskListRow(task: Task, options: { includeStatus?: boolean } = {}): string {
@@ -2420,7 +2443,11 @@ addHelpSchema(taskCmd.command("list"), {
 	reads: "Local editable tasks from the configured backlog directory",
 	required: [],
 	optional: [
-		{ name: "status", type: statusType, description: "Filter by task status; case-insensitive" },
+		{
+			name: "status",
+			type: statusType,
+			description: "Filter by one or more task statuses; repeat or comma-separate values",
+		},
 		{
 			name: "exclude-status",
 			type: statusType,
@@ -2432,7 +2459,11 @@ addHelpSchema(taskCmd.command("list"), {
 			type: "Boolean",
 			description: "Only tasks without an assignee; cannot be combined with --assignee",
 		},
-		{ name: "milestone", type: "Milestone ID or title", description: "Closest case-insensitive match" },
+		{
+			name: "milestone",
+			type: "Milestone ID or title",
+			description: "Filter by one or more closest case-insensitive matches; repeat the option",
+		},
 		{ name: "parent", type: "Task ID", description: "Show subtasks of a parent task" },
 		{ name: "priority", type: priorityType, description: "Filter by task priority" },
 		{
@@ -2448,7 +2479,7 @@ addHelpSchema(taskCmd.command("list"), {
 		{
 			name: "any-label",
 			type: "Comma-separated strings",
-			description: "Require at least one listed label; repeat --any-label or use label1,label2",
+			description: "Require at least one listed label; may be combined with --labels; both label groups must match",
 		},
 		{ name: "search", type: "String", description: "Search task title, description, notes, comments, and metadata" },
 		{ name: "deps-satisfied", type: "Boolean", description: "Only tasks with all dependencies done or missing" },
@@ -2469,7 +2500,11 @@ addHelpSchema(taskCmd.command("list"), {
 	],
 })
 	.description("list tasks grouped by status")
-	.option("-s, --status <status>", "filter tasks by status (case-insensitive)")
+	.option(
+		"-s, --status <status>",
+		"filter tasks by status (repeatable or comma-separated, case-insensitive)",
+		createMultiValueAccumulator(),
+	)
 	.option(
 		"--exclude-status <status>",
 		"exclude tasks by status (repeatable or comma-separated)",
@@ -2477,7 +2512,11 @@ addHelpSchema(taskCmd.command("list"), {
 	)
 	.option("-a, --assignee <assignee>", "filter tasks by assignee")
 	.option("--unassigned", "filter tasks without an assignee (cannot be combined with --assignee)")
-	.option("-m, --milestone <milestone>", "filter tasks by milestone (closest match, case-insensitive)")
+	.option(
+		"-m, --milestone <milestone>",
+		"filter tasks by milestone (repeatable closest match, case-insensitive)",
+		createMultiValueAccumulator(),
+	)
 	.option("-p, --parent <taskId>", "filter tasks by parent task ID")
 	.option("--priority <priority>", "filter tasks by priority (configured priorities)")
 	.option(
@@ -2492,7 +2531,7 @@ addHelpSchema(taskCmd.command("list"), {
 	)
 	.option(
 		"--any-label <labels>",
-		"filter tasks by labels; require at least one comma-separated label (repeatable)",
+		"filter tasks by labels; require at least one comma-separated label; may be combined with --labels; both label groups must match",
 		createMultiValueAccumulator(),
 	)
 	.option("--search <query>", "search task title, description, notes, comments, and metadata")
@@ -2523,15 +2562,13 @@ addHelpSchema(taskCmd.command("list"), {
 			cleanup();
 			return;
 		}
-		if (options.labels && options.anyLabel) {
-			console.error("--any-label cannot be combined with --labels.");
-			process.exitCode = 1;
-			cleanup();
-			return;
-		}
+		const statusFilters = parseDelimitedStringList(options.status) ?? [];
+		const milestoneFilters = toStringArray(options.milestone)
+			.map((milestone) => milestone.trim())
+			.filter(Boolean);
 		const baseFilters: TaskListFilter = {};
-		if (options.status) {
-			baseFilters.status = options.status;
+		if (statusFilters.length === 1) {
+			baseFilters.status = statusFilters[0];
 		}
 		const excludeStatuses = parseDelimitedStringList(options.excludeStatus) ?? [];
 		if (excludeStatuses.length > 0) {
@@ -2548,8 +2585,8 @@ addHelpSchema(taskCmd.command("list"), {
 		if (options.unassigned) {
 			baseFilters.unassigned = true;
 		}
-		if (options.milestone) {
-			baseFilters.milestone = options.milestone;
+		if (milestoneFilters.length === 1) {
+			baseFilters.milestone = milestoneFilters[0];
 		}
 		if (options.priority) {
 			const priority = await normalizeCliPriority(core, String(options.priority));
@@ -2646,6 +2683,16 @@ addHelpSchema(taskCmd.command("list"), {
 			}
 
 			let filtered = sortedTasks;
+			if (statusFilters.length > 1) {
+				filtered = filtered.filter((task) => taskMatchesAnyStatus(task, statusFilters));
+			}
+			if (milestoneFilters.length > 1) {
+				const [activeMilestones, archivedMilestones] = await Promise.all([
+					core.filesystem.listMilestones(),
+					core.filesystem.listArchivedMilestones(),
+				]);
+				filtered = filterTasksByMilestones(filtered, milestoneFilters, [...activeMilestones, ...archivedMilestones]);
+			}
 			if (parentId) {
 				filtered = filtered.filter((task) => task.parentTaskId && taskIdsEqual(parentId, task.parentTaskId));
 			}
@@ -2717,7 +2764,7 @@ addHelpSchema(taskCmd.command("list"), {
 		let filterDescription = "";
 		let title = "Tasks";
 		const activeFilters: string[] = [];
-		if (options.status) activeFilters.push(`Status: ${options.status}`);
+		if (statusFilters.length > 0) activeFilters.push(`Status: ${statusFilters.join(", ")}`);
 		if (baseFilters.excludeStatus) {
 			const excluded = Array.isArray(baseFilters.excludeStatus)
 				? baseFilters.excludeStatus
@@ -2729,7 +2776,7 @@ addHelpSchema(taskCmd.command("list"), {
 		if (options.parent) {
 			activeFilters.push(`Parent: ${normalizeTaskId(String(options.parent))}`);
 		}
-		if (options.milestone) activeFilters.push(`Milestone: ${options.milestone}`);
+		if (milestoneFilters.length > 0) activeFilters.push(`Milestone: ${milestoneFilters.join(", ")}`);
 		if (baseFilters.priority) activeFilters.push(`Priority: ${baseFilters.priority}`);
 		if (baseFilters.type) {
 			const taskTypes = Array.isArray(baseFilters.type) ? baseFilters.type : [baseFilters.type];
@@ -2761,10 +2808,10 @@ addHelpSchema(taskCmd.command("list"), {
 			parentTaskId?: string;
 			limit?: number;
 		} = {
-			status: options.status,
+			status: statusFilters.length === 1 ? statusFilters[0] : undefined,
 			excludeStatus: Array.isArray(baseFilters.excludeStatus) ? baseFilters.excludeStatus : undefined,
 			assignee: options.assignee,
-			milestone: options.milestone,
+			milestone: milestoneFilters.length === 1 ? milestoneFilters[0] : undefined,
 			type: Array.isArray(baseFilters.type) ? baseFilters.type : baseFilters.type ? [baseFilters.type] : undefined,
 			priority: baseFilters.priority,
 			sort: options.sort,
@@ -2789,6 +2836,9 @@ addHelpSchema(taskCmd.command("list"), {
 		}
 		if (parentId) {
 			interactiveLoaderFilters.parentTaskId = parentId;
+		}
+		if (labelFilters.length > 0 && anyLabelFilters.length > 0) {
+			interactiveLoaderFilters.labels = anyLabelFilters;
 		}
 		await runUnifiedView({
 			core,
@@ -2832,11 +2882,21 @@ addHelpSchema(taskCmd.command("list"), {
 				}
 
 				let filtered = sortedTasks;
+				if (statusFilters.length > 1) {
+					filtered = filtered.filter((task) => taskMatchesAnyStatus(task, statusFilters));
+				}
+				if (milestoneFilters.length > 1) {
+					const [activeMilestones, archivedMilestones] = await Promise.all([
+						core.filesystem.listMilestones(),
+						core.filesystem.listArchivedMilestones(),
+					]);
+					filtered = filterTasksByMilestones(filtered, milestoneFilters, [...activeMilestones, ...archivedMilestones]);
+				}
 				if (parentId) {
 					filtered = filtered.filter((task) => task.parentTaskId && taskIdsEqual(parentId, task.parentTaskId));
 				}
 
-				if (options.milestone && filtered.length > 0) {
+				if (milestoneFilters.length === 1 && filtered.length > 0) {
 					const [activeMilestones, archivedMilestones] = await Promise.all([
 						core.filesystem.listMilestones(),
 						core.filesystem.listArchivedMilestones(),
@@ -2846,7 +2906,7 @@ addHelpSchema(taskCmd.command("list"), {
 						...archivedMilestones,
 					]);
 					const resolvedMilestone = resolveClosestMilestoneFilterValue(
-						options.milestone,
+						milestoneFilters[0] ?? "",
 						filtered.map((task) => resolveMilestoneFilterValue(task.milestone ?? "")),
 					);
 					if (resolvedMilestone) {

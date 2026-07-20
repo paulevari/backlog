@@ -431,9 +431,90 @@ describe("Task selection filters", () => {
 			expect(taskIds).not.toContain("TASK-4");
 			expect(taskIds).not.toContain("TASK-5");
 		});
+
+		it("should support the generic selection contract in one invocation", async () => {
+			const core = new Core(TEST_DIR);
+			const releaseAlpha = await core.filesystem.createMilestone("Release Alpha");
+			const releaseBeta = await core.filesystem.createMilestone("Release Beta");
+			const releaseGamma = await core.filesystem.createMilestone("Release Gamma");
+
+			const tasks = [
+				{
+					id: "task-1",
+					title: "Matches first status, milestone, and any-label branch",
+					status: "To Do",
+					milestone: releaseAlpha.id,
+					labels: ["required-a", "required-b", "any-a"],
+				},
+				{
+					id: "task-2",
+					title: "Matches second status, milestone, and any-label branch",
+					status: "In Progress",
+					milestone: releaseBeta.id,
+					labels: ["required-a", "required-b", "any-b"],
+				},
+				{
+					id: "task-3",
+					title: "Excluded by status",
+					status: "Done",
+					milestone: releaseAlpha.id,
+					labels: ["required-a", "required-b", "any-a"],
+				},
+				{
+					id: "task-4",
+					title: "Excluded by milestone",
+					status: "To Do",
+					milestone: releaseGamma.id,
+					labels: ["required-a", "required-b", "any-a"],
+				},
+				{
+					id: "task-5",
+					title: "Excluded by require-all labels",
+					status: "To Do",
+					milestone: releaseAlpha.id,
+					labels: ["required-a", "any-a"],
+				},
+				{
+					id: "task-6",
+					title: "Excluded by require-any labels",
+					status: "In Progress",
+					milestone: releaseBeta.id,
+					labels: ["required-a", "required-b", "other"],
+				},
+			];
+
+			for (const task of tasks) {
+				await core.createTask(
+					{
+						...task,
+						assignee: [],
+						createdDate: "2025-06-08",
+						dependencies: [],
+						rawContent: task.title,
+					},
+					false,
+				);
+			}
+
+			const result =
+				await $`bun ${CLI_PATH} task list --json --status "To Do" --status "In Progress" --milestone "Release Alpha" --milestone "Release Beta" --labels required-a,required-b --any-label any-a,any-b`
+					.cwd(TEST_DIR)
+					.quiet();
+			const output = JSON.parse(result.stdout.toString());
+			const taskIds = output.tasks.map((task: { id: string }) => task.id);
+
+			expect(taskIds).toEqual(["TASK-1", "TASK-2"]);
+		});
 	});
 
 	describe("label matching modes", () => {
+		it("should document combining require-all and require-any label groups", async () => {
+			const result = await $`bun ${CLI_PATH} task list --help`.cwd(TEST_DIR).quiet();
+			const help = result.stdout.toString().replace(/\s+/g, " ");
+
+			expect(help).toContain("may be combined with --labels; both label groups must match");
+		});
+
 		it("T-105: should support require_all (AND) label matching", async () => {
 			const core = new Core(TEST_DIR);
 
@@ -557,13 +638,6 @@ describe("Task selection filters", () => {
 			expect(taskIds).toContain("TASK-2");
 			expect(taskIds).toContain("TASK-3");
 			expect(taskIds).not.toContain("TASK-4");
-		});
-
-		it("should reject combining --labels with --any-label", async () => {
-			const result = await $`bun ${CLI_PATH} task list --json --labels a --any-label b`.cwd(TEST_DIR).nothrow().quiet();
-
-			expect(result.exitCode).toBe(1);
-			expect(result.stderr.toString()).toContain("--any-label cannot be combined with --labels");
 		});
 	});
 
