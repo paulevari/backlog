@@ -621,7 +621,10 @@ describe("CLI Integration", () => {
 			expect(updatedTask?.updatedDate).toBe(today);
 			expect(updatedTask?.labels).toEqual(["yaml", "test"]);
 			expect(updatedTask?.dependencies).toEqual(["task-1"]);
-			expect(updatedTask?.rawContent).toBe("Testing YAML preservation");
+			// Content includes original description plus AC/DoD sections
+			expect(updatedTask?.rawContent).toContain("Testing YAML preservation");
+			expect(updatedTask?.acceptanceCriteriaItems).toHaveLength(1);
+			expect(updatedTask?.definitionOfDoneItems).toHaveLength(1);
 		});
 	});
 });

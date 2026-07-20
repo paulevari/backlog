@@ -1733,7 +1733,7 @@ function getTaskReadOutputMode(options: { json?: boolean; plain?: boolean }): Re
 }
 
 taskCmd.hook("preSubcommand", (command, subcommand) => {
-	if (command.opts().json && !["list", "view", "validate"].includes(subcommand.name())) {
+	if (command.opts().json && !["list", "view", "validate", "graph", "transition"].includes(subcommand.name())) {
 		command.error("error: unknown option '--json'", { code: "commander.unknownOption", exitCode: 1 });
 	}
 });
