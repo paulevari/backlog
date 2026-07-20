@@ -6,10 +6,29 @@ import { Core } from "../index.ts";
 import { createUniqueTestDir, initializeTestProject, safeCleanup } from "./test-utils.ts";
 
 let TEST_DIR: string;
+let originalNotificationSetting: string | undefined;
 const CLI_PATH = join(process.cwd(), "src", "cli.ts");
+
+async function runCli(args: string[]) {
+	const child = Bun.spawn(["bun", CLI_PATH, ...args], {
+		cwd: TEST_DIR,
+		env: { ...globalThis.process.env, BACKLOG_BELLEROPHON_NOTIFICATIONS: "0" },
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [exitCode, stdout, stderr] = await Promise.all([
+		child.exited,
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+	]);
+	return { exitCode, stdout, stderr };
+}
 
 describe("Task selection filters", () => {
 	beforeEach(async () => {
+		originalNotificationSetting = process.env.BACKLOG_BELLEROPHON_NOTIFICATIONS;
+		process.env.BACKLOG_BELLEROPHON_NOTIFICATIONS = "0";
 		TEST_DIR = createUniqueTestDir("test-selection-filters");
 		await mkdir(TEST_DIR, { recursive: true });
 		await $`git init -b main`.cwd(TEST_DIR).quiet();
@@ -21,7 +40,15 @@ describe("Task selection filters", () => {
 	});
 
 	afterEach(async () => {
-		await safeCleanup(TEST_DIR);
+		try {
+			await safeCleanup(TEST_DIR);
+		} finally {
+			if (originalNotificationSetting === undefined) {
+				delete process.env.BACKLOG_BELLEROPHON_NOTIFICATIONS;
+			} else {
+				process.env.BACKLOG_BELLEROPHON_NOTIFICATIONS = originalNotificationSetting;
+			}
+		}
 	});
 
 	describe("--deps-satisfied filter", () => {
@@ -98,8 +125,9 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result = await $`bun ${CLI_PATH} task list --json --deps-satisfied`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--deps-satisfied"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.schemaVersion).toBe(1);
 			expect(output.tasks).toBeDefined();
@@ -141,8 +169,9 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result = await $`bun ${CLI_PATH} task list --json --deps-satisfied`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--deps-satisfied"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			const taskIds = output.tasks.map((t: { id: string }) => t.id);
 			expect(taskIds).not.toContain("TASK-2");
@@ -225,8 +254,9 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result = await $`bun ${CLI_PATH} task list --json --exclude-parents`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--exclude-parents"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.schemaVersion).toBe(1);
 			expect(output.tasks).toBeDefined();
@@ -271,8 +301,9 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result = await $`bun ${CLI_PATH} task list --json --exclude-parents`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--exclude-parents"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			const taskIds = output.tasks.map((t: { id: string }) => t.id);
 			expect(taskIds).not.toContain("TASK-1");
@@ -301,11 +332,13 @@ describe("Task selection filters", () => {
 				);
 			}
 
-			const result1 = await $`bun ${CLI_PATH} task list --json --labels test --limit 3`.cwd(TEST_DIR).quiet();
-			const output1 = JSON.parse(result1.stdout.toString());
+			const result1 = await runCli(["task", "list", "--json", "--labels", "test", "--limit", "3"]);
+			expect(result1.exitCode, result1.stderr).toBe(0);
+			const output1 = JSON.parse(result1.stdout);
 
-			const result2 = await $`bun ${CLI_PATH} task list --json --labels test --limit 3`.cwd(TEST_DIR).quiet();
-			const output2 = JSON.parse(result2.stdout.toString());
+			const result2 = await runCli(["task", "list", "--json", "--labels", "test", "--limit", "3"]);
+			expect(result2.exitCode, result2.stderr).toBe(0);
+			const output2 = JSON.parse(result2.stdout);
 
 			expect(output1.schemaVersion).toBe(1);
 			expect(output1.tasks).toBeDefined();
@@ -415,11 +448,27 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result =
-				await $`bun ${CLI_PATH} task list --json --status "To Do" --assignee alice --milestone "Test Milestone" --priority high --labels frontend,bug --deps-satisfied --exclude-parents --limit 5`
-					.cwd(TEST_DIR)
-					.quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli([
+				"task",
+				"list",
+				"--json",
+				"--status",
+				"To Do",
+				"--assignee",
+				"alice",
+				"--milestone",
+				"Test Milestone",
+				"--priority",
+				"high",
+				"--labels",
+				"frontend,bug",
+				"--deps-satisfied",
+				"--exclude-parents",
+				"--limit",
+				"5",
+			]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.schemaVersion).toBe(1);
 			expect(output.tasks).toBeDefined();
@@ -496,11 +545,25 @@ describe("Task selection filters", () => {
 				);
 			}
 
-			const result =
-				await $`bun ${CLI_PATH} task list --json --status "To Do" --status "In Progress" --milestone "Release Alpha" --milestone "Release Beta" --labels required-a,required-b --any-label any-a,any-b`
-					.cwd(TEST_DIR)
-					.quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli([
+				"task",
+				"list",
+				"--json",
+				"--status",
+				"To Do",
+				"--status",
+				"In Progress",
+				"--milestone",
+				"Release Alpha",
+				"--milestone",
+				"Release Beta",
+				"--labels",
+				"required-a,required-b",
+				"--any-label",
+				"any-a,any-b",
+			]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 			const taskIds = output.tasks.map((task: { id: string }) => task.id);
 
 			expect(taskIds).toEqual(["TASK-1", "TASK-2"]);
@@ -531,11 +594,19 @@ describe("Task selection filters", () => {
 				);
 			}
 
-			const result =
-				await $`bun ${CLI_PATH} task list --json --status "To Do" --milestone "Release Alpha" --milestone "Release Beta"`
-					.cwd(TEST_DIR)
-					.quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli([
+				"task",
+				"list",
+				"--json",
+				"--status",
+				"To Do",
+				"--milestone",
+				"Release Alpha",
+				"--milestone",
+				"Release Beta",
+			]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.tasks).toEqual([]);
 		});
@@ -566,34 +637,38 @@ describe("Task selection filters", () => {
 				);
 			}
 
-			const result =
-				await $`bun ${CLI_PATH} task list --json --milestone ${releaseAlpha.id} --milestone ${releaseBeta.id}`
-					.cwd(TEST_DIR)
-					.quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli([
+				"task",
+				"list",
+				"--json",
+				"--milestone",
+				releaseAlpha.id,
+				"--milestone",
+				releaseBeta.id,
+			]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 			const taskIds = output.tasks.map((task: { id: string }) => task.id);
 
 			expect(taskIds).toEqual(["TASK-1", "TASK-2"]);
 		});
 
 		it("should require non-interactive output for compound selection filters", async () => {
-			const result = await $`bun ${CLI_PATH} task list --status "To Do" --status Done`.cwd(TEST_DIR).nothrow().quiet();
+			const result = await runCli(["task", "list", "--status", "To Do", "--status", "Done"]);
 
 			expect(result.exitCode).toBe(1);
-			expect(result.stderr.toString()).toContain("Compound task selection filters require --json or --plain");
+			expect(result.stderr).toContain("Compound task selection filters require --json or --plain");
 
-			const plainResult = await $`bun ${CLI_PATH} task list --plain --status "To Do" --status Done`
-				.cwd(TEST_DIR)
-				.nothrow()
-				.quiet();
-			expect(plainResult.exitCode).toBe(0);
+			const plainResult = await runCli(["task", "list", "--plain", "--status", "To Do", "--status", "Done"]);
+			expect(plainResult.exitCode, plainResult.stderr).toBe(0);
 		});
 	});
 
 	describe("label matching modes", () => {
 		it("should document combining require-all and require-any label groups", async () => {
-			const result = await $`bun ${CLI_PATH} task list --help`.cwd(TEST_DIR).quiet();
-			const help = result.stdout.toString().replace(/\s+/g, " ");
+			const result = await runCli(["task", "list", "--help"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const help = result.stdout.replace(/\s+/g, " ");
 
 			expect(help).toContain("may be combined with --labels; both label groups must match");
 			expect(help).toContain("Compound filters require --json or --plain");
@@ -644,8 +719,9 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result = await $`bun ${CLI_PATH} task list --json --labels frontend,bug`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--labels", "frontend,bug"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.schemaVersion).toBe(1);
 			const taskIds = output.tasks.map((t: { id: string }) => t.id);
@@ -713,8 +789,9 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const result = await $`bun ${CLI_PATH} task list --json --any-label a,b`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--any-label", "a,b"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.schemaVersion).toBe(1);
 			const taskIds = output.tasks.map((t: { id: string }) => t.id);
@@ -790,13 +867,15 @@ describe("Task selection filters", () => {
 				false,
 			);
 
-			const baselineResult = await $`bun ${CLI_PATH} task list --json --status Done`.cwd(TEST_DIR).quiet();
-			const baselineOutput = JSON.parse(baselineResult.stdout.toString());
+			const baselineResult = await runCli(["task", "list", "--json", "--status", "Done"]);
+			expect(baselineResult.exitCode, baselineResult.stderr).toBe(0);
+			const baselineOutput = JSON.parse(baselineResult.stdout);
 			const baselineTaskIds = baselineOutput.tasks.map((t: { id: string }) => t.id);
 			expect(baselineTaskIds).toContain("TASK-2");
 
-			const result = await $`bun ${CLI_PATH} task list --json --milestone-scope open`.cwd(TEST_DIR).quiet();
-			const output = JSON.parse(result.stdout.toString());
+			const result = await runCli(["task", "list", "--json", "--milestone-scope", "open"]);
+			expect(result.exitCode, result.stderr).toBe(0);
+			const output = JSON.parse(result.stdout);
 
 			expect(output.schemaVersion).toBe(1);
 			const taskIds = output.tasks.map((t: { id: string }) => t.id);
@@ -804,10 +883,17 @@ describe("Task selection filters", () => {
 			expect(taskIds).not.toContain("TASK-2");
 			expect(taskIds).not.toContain("TASK-3");
 
-			const scopedDoneResult = await $`bun ${CLI_PATH} task list --json --status Done --milestone-scope open`
-				.cwd(TEST_DIR)
-				.quiet();
-			const scopedDoneOutput = JSON.parse(scopedDoneResult.stdout.toString());
+			const scopedDoneResult = await runCli([
+				"task",
+				"list",
+				"--json",
+				"--status",
+				"Done",
+				"--milestone-scope",
+				"open",
+			]);
+			expect(scopedDoneResult.exitCode, scopedDoneResult.stderr).toBe(0);
+			const scopedDoneOutput = JSON.parse(scopedDoneResult.stdout);
 			const scopedDoneTaskIds = scopedDoneOutput.tasks.map((t: { id: string }) => t.id);
 			expect(scopedDoneTaskIds).toContain("TASK-4");
 			expect(scopedDoneTaskIds).not.toContain("TASK-2");
