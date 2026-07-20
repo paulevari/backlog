@@ -191,9 +191,9 @@ describe("BacklogServer task SPA fallback", () => {
 
 	it("serves task and board namespaces through the SPA for direct and refreshed navigation", async () => {
 		// Compile the HTML bundle once before exercising the bounded route requests.
-		// The test runner's existing timeout bounds this first-build readiness check;
-		// aborting it early can leave Bun's development bundler with a stale socket.
-		const shellResponse = await fetch(`http://127.0.0.1:${serverPort}/`);
+		// Allow 15s for initial bundler compilation; the full test's 20s timeout provides a safety net
+		// without prematurely aborting the bundler connection.
+		const shellResponse = await request("/", {}, 15000);
 		expect(shellResponse.status).toBe(200);
 		expect(shellResponse.headers.get("content-type")).toContain("text/html");
 		expect(await shellResponse.text()).toContain('<div id="root"></div>');
