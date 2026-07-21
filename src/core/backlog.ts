@@ -1,9 +1,24 @@
 import { createHash } from "node:crypto";
-import { rename as moveFile, readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import type { BigIntStats, Dirent } from "node:fs";
+import {
+	link,
+	lstat,
+	mkdtemp,
+	rename as moveFile,
+	open,
+	readdir,
+	readFile,
+	rmdir,
+	stat,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_DIRECTORIES, DEFAULT_STATUSES, FALLBACK_STATUS } from "../constants/index.ts";
 import { FileSystem, isCreateLockError } from "../file-system/operations.ts";
 import { type GitIndexEntry, GitOperations } from "../git/operations.ts";
+import { parseTask } from "../markdown/parser.ts";
+import { serializeTask } from "../markdown/serializer.ts";
 import {
 	type AcceptanceCriterion,
 	type BacklogConfig,
@@ -18,8 +33,11 @@ import {
 	type MaterializedTaskGraph,
 	type MaterializedTaskGraphEntry,
 	type Milestone,
+	ORCHESTRATION_FAMILY_MAX_MEMBERS,
 	type OrchestrationCapabilities,
 	type OrchestrationExecutionSummary,
+	type OrchestrationFamilyCompleteInput,
+	type OrchestrationFamilyCompleteResult,
 	type OrchestrationTransitionInput,
 	type SearchFilters,
 	type Task,
@@ -77,16 +95,18 @@ import {
 import {
 	AmbiguousTaskIdError,
 	canonicalTaskId,
+	extractTaskIdFromFilename,
 	getDraftPath,
 	getTaskFilename,
 	getTaskPath,
 	normalizeTaskId,
+	normalizeTaskIdentity,
 	taskIdsEqual,
 } from "../utils/task-path.ts";
 import { attachSubtaskSummaries } from "../utils/task-subtasks.ts";
 import { formatValidTaskTypeValues, matchesTaskTypeFilter, resolveTaskTypeValue } from "../utils/task-type-config.ts";
 import { upsertTaskUpdatedDate } from "../utils/task-updated-date.ts";
-import { isTerminalStatus, validateTerminalStatusCompleteness } from "../utils/terminal-status.ts";
+import { getTerminalStatus, isTerminalStatus, validateTerminalStatusCompleteness } from "../utils/terminal-status.ts";
 import { migrateConfig, needsMigration } from "./config-migration.ts";
 import { ContentStore } from "./content-store.ts";
 import {
@@ -295,6 +315,42 @@ function orchestrationRequestDigest(value: unknown): string {
 	return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+type OrchestrationFamilyFaultPoint =
+	| "receipt.temp_created"
+	| "receipt.file_synced"
+	| "receipt.before_stage"
+	| "receipt.before_install"
+	| "receipt.rollback_before_stage"
+	| "receipt.replaced"
+	| "receipt.directory_synced"
+	| "move.before_stage"
+	| "move.target_linked"
+	| "move.target_directory_synced"
+	| "move.source_unlinked"
+	| "move.source_directory_synced"
+	| "move.before_stage_unlink"
+	| "git.before_commit"
+	| "git.after_commit"
+	| "lifecycle.before_publish"
+	| "lifecycle.after_publish";
+
+type OrchestrationFamilyFaultInjector = (point: OrchestrationFamilyFaultPoint, taskId?: string) => Promise<void>;
+
+type OrchestrationFamilyFileSnapshot = {
+	content: Buffer;
+	dev: bigint;
+	ino: bigint;
+	mode: bigint;
+	size: bigint;
+	mtimeNs: bigint;
+	ctimeNs: bigint;
+};
+
+const orchestrationFamilyFileSnapshot = Symbol("orchestrationFamilyFileSnapshot");
+type OrchestrationFamilyInventoryTask = Task & {
+	[orchestrationFamilyFileSnapshot]: OrchestrationFamilyFileSnapshot;
+};
+
 export class Core {
 	public fs: FileSystem;
 	public git: GitOperations;
@@ -306,14 +362,23 @@ export class Core {
 	private activeBranchFingerprintPromise: Promise<string> | null = null;
 	private activeBranchRefreshPromise: Promise<void> | null = null;
 	private readonly taskNotifier: TaskLifecycleNotifier;
+	private readonly familyCompletionFaultInjector?: OrchestrationFamilyFaultInjector;
 
-	constructor(projectRoot: string, options?: { enableWatchers?: boolean; taskNotifier?: TaskLifecycleNotifier }) {
+	constructor(
+		projectRoot: string,
+		options?: {
+			enableWatchers?: boolean;
+			taskNotifier?: TaskLifecycleNotifier;
+			familyCompletionFaultInjector?: OrchestrationFamilyFaultInjector;
+		},
+	) {
 		this.fs = new FileSystem(projectRoot);
 		this.git = new GitOperations(projectRoot, null, () => this.fs.loadConfig());
 		// Disable watchers by default for CLI commands (non-interactive)
 		// Interactive modes (TUI, browser, MCP) should explicitly pass enableWatchers: true
 		this.enableWatchers = options?.enableWatchers ?? false;
 		this.taskNotifier = options?.taskNotifier ?? getTaskLifecycleNotifier();
+		this.familyCompletionFaultInjector = options?.familyCompletionFaultInjector;
 		// Note: Config is loaded lazily when needed since constructor can't be async
 	}
 
@@ -347,6 +412,8 @@ export class Core {
 				orchestrationMetadata: true,
 				atomicGraphMaterialization: true,
 				guardedTransitions: true,
+				atomicDescriptionTransition: true,
+				atomicFamilyCompletion: true,
 			},
 			lifecycleEventVersions: [1, 2],
 			requiredStatuses: [...ORCHESTRATION_REQUIRED_STATUSES],
@@ -2025,6 +2092,12 @@ export class Core {
 		const expectedStatus = await this.requireCanonicalStatus(input.expectedStatus);
 		const idempotencyKey = input.idempotencyKey.trim();
 		if (!idempotencyKey) throw new Error("idempotencyKey is required.");
+		if (input.description !== undefined) {
+			if (input.description.trim().length === 0) throw new Error("description replacement must not be empty.");
+			if (!(expectedStatus === "Backlog" && targetStatus === "Deferred" && input.actorRole === "orchestrator")) {
+				throw new Error("description replacement is only allowed for Backlog to Deferred orchestration transitions.");
+			}
+		}
 		const requestDigest = orchestrationRequestDigest({
 			...input,
 			idempotencyKey,
@@ -2115,6 +2188,7 @@ export class Core {
 					implementationNotes: [task.implementationNotes, input.implementationNotes].filter(Boolean).join("\n\n"),
 				}),
 				...(input.finalSummary !== undefined && { finalSummary: input.finalSummary }),
+				...(input.description !== undefined && { description: input.description }),
 				...(acceptedClosure &&
 					task.acceptanceCriteriaItems && {
 						acceptanceCriteriaItems: task.acceptanceCriteriaItems.map((item) => ({ ...item, checked: true })),
@@ -2151,6 +2225,1146 @@ export class Core {
 		return outcome.task;
 	}
 
+	private async injectFamilyCompletionFault(point: OrchestrationFamilyFaultPoint, taskId?: string): Promise<void> {
+		await this.familyCompletionFaultInjector?.(point, taskId);
+	}
+
+	private async fsyncDirectory(directoryPath: string): Promise<void> {
+		if (process.platform === "win32") return;
+		const handle = await open(directoryPath, "r");
+		try {
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+	}
+
+	private async unlinkIfPresent(filePath: string): Promise<boolean> {
+		try {
+			await unlink(filePath);
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+	}
+
+	private async publishDurableFamilyReceipt(
+		targetPath: string,
+		content: string,
+		requestDigest: string,
+		taskId: string,
+		mode: number,
+		expectedSnapshot: OrchestrationFamilyFileSnapshot,
+	): Promise<{ snapshot: OrchestrationFamilyFileSnapshot; originalPath: string }> {
+		const directoryPath = dirname(targetPath);
+		const { temporaryPath, originalPath } = this.familyReceiptPaths(targetPath, requestDigest);
+		if (await this.unlinkIfPresent(temporaryPath)) await this.fsyncDirectory(directoryPath);
+
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		try {
+			handle = await open(temporaryPath, "wx", 0o600);
+			await this.injectFamilyCompletionFault("receipt.temp_created", taskId);
+			await handle.writeFile(content, { encoding: "utf8" });
+			await handle.chmod(mode);
+			await handle.sync();
+			await this.injectFamilyCompletionFault("receipt.file_synced", taskId);
+			await handle.close();
+			handle = undefined;
+			try {
+				await lstat(originalPath);
+				throw new Error(`Task family receipt staging path already exists: ${originalPath}`);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+			await this.injectFamilyCompletionFault("receipt.before_stage", taskId);
+			await moveFile(targetPath, originalPath);
+			try {
+				await this.assertFamilyLinkedFileSnapshot(originalPath, expectedSnapshot, taskId);
+			} catch (error) {
+				const replacementSnapshot = await this.captureFamilyFileSnapshot(originalPath, taskId);
+				await link(originalPath, targetPath);
+				await this.fsyncDirectory(directoryPath);
+				const stagedReplacement = await this.stageFamilyPathRemoval(originalPath, replacementSnapshot, taskId);
+				await this.finishFamilyPathRemoval(stagedReplacement);
+				throw error;
+			}
+			await this.injectFamilyCompletionFault("receipt.before_install", taskId);
+			await link(temporaryPath, targetPath);
+			await this.injectFamilyCompletionFault("receipt.replaced", taskId);
+			await this.fsyncDirectory(directoryPath);
+			await this.injectFamilyCompletionFault("receipt.directory_synced", taskId);
+			await this.unlinkIfPresent(temporaryPath);
+			await this.fsyncDirectory(directoryPath);
+			const snapshot = await this.captureFamilyFileSnapshot(targetPath, taskId);
+			return { snapshot, originalPath };
+		} catch (error) {
+			await handle?.close().catch(() => undefined);
+			await this.unlinkIfPresent(temporaryPath).catch(() => false);
+			throw error;
+		}
+	}
+
+	private familyReceiptPaths(
+		targetPath: string,
+		requestDigest: string,
+	): { temporaryPath: string; originalPath: string } {
+		const prefix = join(dirname(targetPath), `.${basename(targetPath)}.family-${requestDigest.slice(0, 16)}`);
+		return { temporaryPath: `${prefix}.tmp`, originalPath: `${prefix}.original` };
+	}
+
+	private familyFileContentDigest(snapshot: OrchestrationFamilyFileSnapshot): string {
+		return createHash("sha256").update(snapshot.content).digest("hex");
+	}
+
+	private async recoverInterruptedFamilyReceipt(
+		familyRootTaskId: string,
+		requestDigest: string,
+		idempotencyKey: string,
+	): Promise<void> {
+		const suffix = `.family-${requestDigest.slice(0, 16)}.original`;
+		const entries = await readdir(this.fs.tasksDir, { withFileTypes: true });
+		let recovered = false;
+		for (const entry of entries) {
+			if (!entry.isFile() || !entry.name.startsWith(".") || !entry.name.endsWith(suffix)) continue;
+			const originalPath = join(this.fs.tasksDir, entry.name);
+			const originalSnapshot = await this.captureFamilyFileSnapshot(originalPath, familyRootTaskId);
+			let originalTask: Task;
+			try {
+				originalTask = normalizeTaskIdentity(parseTask(originalSnapshot.content.toString("utf8")));
+			} catch (error) {
+				throw new Error(`Task family receipt recovery could not parse original root: ${originalPath}`, {
+					cause: error,
+				});
+			}
+			if (!taskIdsEqual(originalTask.id, familyRootTaskId)) continue;
+			if (recovered) throw new Error(`Task family ${familyRootTaskId} has ambiguous receipt recovery state.`);
+			recovered = true;
+
+			const targetName = entry.name.slice(1, -suffix.length);
+			const targetPath = join(this.fs.tasksDir, targetName);
+			const completedPath = join(this.fs.completedDir, targetName);
+			const temporaryPath = join(this.fs.tasksDir, `.${targetName}.family-${requestDigest.slice(0, 16)}.tmp`);
+			const targetExists = await this.familyPathExists(targetPath);
+			const completedExists = await this.familyPathExists(completedPath);
+			const temporaryExists = await this.familyPathExists(temporaryPath);
+			if (!targetExists && completedExists) {
+				const completedSnapshot = await this.captureFamilyFileSnapshot(completedPath, familyRootTaskId);
+				let completedTask: Task;
+				try {
+					completedTask = normalizeTaskIdentity(parseTask(completedSnapshot.content.toString("utf8")));
+				} catch (error) {
+					throw new Error(`Task family receipt recovery could not parse completed root: ${completedPath}`, {
+						cause: error,
+					});
+				}
+				const receipt = completedTask.orchestration?.familyCompletionReceipts?.find(
+					(candidate) => candidate.idempotencyKey === idempotencyKey && candidate.requestDigest === requestDigest,
+				);
+				if (!taskIdsEqual(completedTask.id, familyRootTaskId) || !receipt) {
+					throw new Error(`Task family completed receipt recovery state does not match request: ${completedPath}`);
+				}
+				if (temporaryExists) {
+					await this.assertFamilyLinkedFileSnapshot(temporaryPath, completedSnapshot, familyRootTaskId);
+					const stagedTemporary = await this.stageFamilyPathRemoval(temporaryPath, completedSnapshot, familyRootTaskId);
+					await this.finishFamilyPathRemoval(stagedTemporary);
+				}
+				continue;
+			}
+			if (!targetExists && temporaryExists) {
+				const temporarySnapshot = await this.captureFamilyFileSnapshot(temporaryPath, familyRootTaskId);
+				let receiptTask: Task;
+				try {
+					receiptTask = normalizeTaskIdentity(parseTask(temporarySnapshot.content.toString("utf8")));
+				} catch (error) {
+					throw new Error(`Task family receipt recovery could not parse staged root: ${temporaryPath}`, {
+						cause: error,
+					});
+				}
+				const receipt = receiptTask.orchestration?.familyCompletionReceipts?.find(
+					(candidate) => candidate.idempotencyKey === idempotencyKey && candidate.requestDigest === requestDigest,
+				);
+				if (!taskIdsEqual(receiptTask.id, familyRootTaskId) || !receipt) {
+					throw new Error(`Task family receipt recovery state does not match request: ${temporaryPath}`);
+				}
+				await link(temporaryPath, targetPath);
+				await this.fsyncDirectory(this.fs.tasksDir);
+				const stagedTemporary = await this.stageFamilyPathRemoval(temporaryPath, temporarySnapshot, familyRootTaskId);
+				await this.finishFamilyPathRemoval(stagedTemporary);
+				continue;
+			}
+			if (!targetExists) {
+				await link(originalPath, targetPath);
+				await this.fsyncDirectory(this.fs.tasksDir);
+				const stagedOriginal = await this.stageFamilyPathRemoval(originalPath, originalSnapshot, familyRootTaskId);
+				await this.finishFamilyPathRemoval(stagedOriginal);
+				continue;
+			}
+			if (temporaryExists) {
+				const targetSnapshot = await this.captureFamilyFileSnapshot(targetPath, familyRootTaskId);
+				await this.assertFamilyLinkedFileSnapshot(temporaryPath, targetSnapshot, familyRootTaskId);
+				const stagedTemporary = await this.stageFamilyPathRemoval(temporaryPath, targetSnapshot, familyRootTaskId);
+				await this.finishFamilyPathRemoval(stagedTemporary);
+			}
+		}
+	}
+
+	private async restoreDurableFamilyReceipt(
+		targetPath: string,
+		originalPath: string,
+		taskId: string,
+		originalSnapshot: OrchestrationFamilyFileSnapshot,
+		receiptSnapshot: OrchestrationFamilyFileSnapshot,
+	): Promise<void> {
+		let stagedReceipt: { directoryPath: string; stagedPath: string } | undefined;
+		try {
+			await this.injectFamilyCompletionFault("receipt.rollback_before_stage", taskId);
+			stagedReceipt = await this.stageFamilyPathRemoval(targetPath, receiptSnapshot, taskId);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		try {
+			await this.assertFamilyLinkedFileSnapshot(originalPath, originalSnapshot, taskId);
+			await link(originalPath, targetPath);
+			await this.fsyncDirectory(dirname(targetPath));
+		} catch (error) {
+			if (stagedReceipt && !(await this.familyPathExists(targetPath))) {
+				await link(stagedReceipt.stagedPath, targetPath);
+				await this.fsyncDirectory(dirname(targetPath));
+				await this.finishFamilyPathRemoval(stagedReceipt);
+			}
+			throw error;
+		}
+		if (stagedReceipt) await this.finishFamilyPathRemoval(stagedReceipt);
+		const stagedOriginal = await this.stageFamilyPathRemoval(originalPath, originalSnapshot, taskId);
+		await this.finishFamilyPathRemoval(stagedOriginal);
+	}
+
+	private async supportedFamilyFileMetadata(filePath: string): Promise<BigIntStats> {
+		const metadata = await lstat(filePath, { bigint: true });
+		if (!metadata.isFile() || (metadata.mode & 0o7000n) !== 0n) {
+			throw new Error(`Task family path has unsupported file metadata: ${filePath}`);
+		}
+		return metadata;
+	}
+
+	private familyFileSnapshot(metadata: BigIntStats, content: Buffer): OrchestrationFamilyFileSnapshot {
+		return {
+			content,
+			dev: metadata.dev,
+			ino: metadata.ino,
+			mode: metadata.mode,
+			size: metadata.size,
+			mtimeNs: metadata.mtimeNs,
+			ctimeNs: metadata.ctimeNs,
+		};
+	}
+
+	private familyFileMetadataMatches(metadata: BigIntStats, expected: OrchestrationFamilyFileSnapshot): boolean {
+		return (
+			metadata.dev === expected.dev &&
+			metadata.ino === expected.ino &&
+			metadata.mode === expected.mode &&
+			metadata.size === expected.size &&
+			metadata.mtimeNs === expected.mtimeNs &&
+			metadata.ctimeNs === expected.ctimeNs
+		);
+	}
+
+	private familyLinkedFileMetadataMatches(metadata: BigIntStats, expected: OrchestrationFamilyFileSnapshot): boolean {
+		return (
+			metadata.dev === expected.dev &&
+			metadata.ino === expected.ino &&
+			metadata.mode === expected.mode &&
+			metadata.size === expected.size &&
+			metadata.mtimeNs === expected.mtimeNs
+		);
+	}
+
+	private familyLinkedFileSnapshotMatches(
+		actual: OrchestrationFamilyFileSnapshot,
+		expected: OrchestrationFamilyFileSnapshot,
+	): boolean {
+		return (
+			actual.dev === expected.dev &&
+			actual.ino === expected.ino &&
+			actual.mode === expected.mode &&
+			actual.size === expected.size &&
+			actual.mtimeNs === expected.mtimeNs &&
+			actual.content.equals(expected.content)
+		);
+	}
+
+	private async captureFamilyFileSnapshot(filePath: string, taskId: string): Promise<OrchestrationFamilyFileSnapshot> {
+		const metadata = await this.supportedFamilyFileMetadata(filePath);
+		const content = await readFile(filePath);
+		const metadataAfterRead = await this.supportedFamilyFileMetadata(filePath);
+		const snapshot = this.familyFileSnapshot(metadata, content);
+		if (!this.familyFileMetadataMatches(metadataAfterRead, snapshot)) {
+			throw new Error(`Task family member ${taskId} changed while snapshotting: ${filePath}`);
+		}
+		return this.familyFileSnapshot(metadataAfterRead, content);
+	}
+
+	private async assertFamilyFileSnapshot(
+		filePath: string,
+		expected: OrchestrationFamilyFileSnapshot,
+		taskId: string,
+	): Promise<void> {
+		const metadata = await this.supportedFamilyFileMetadata(filePath);
+		if (!this.familyFileMetadataMatches(metadata, expected)) {
+			throw new Error(`Task family member ${taskId} changed after inventory: ${filePath}`);
+		}
+		const content = await readFile(filePath);
+		const metadataAfterRead = await this.supportedFamilyFileMetadata(filePath);
+		if (!this.familyFileMetadataMatches(metadataAfterRead, expected) || !content.equals(expected.content)) {
+			throw new Error(`Task family member ${taskId} changed after inventory: ${filePath}`);
+		}
+	}
+
+	private async assertFamilyLinkedFileSnapshot(
+		filePath: string,
+		expected: OrchestrationFamilyFileSnapshot,
+		taskId: string,
+	): Promise<void> {
+		const metadata = await this.supportedFamilyFileMetadata(filePath);
+		if (!this.familyLinkedFileMetadataMatches(metadata, expected)) {
+			throw new Error(`Task family member ${taskId} no longer references its inventoried file: ${filePath}`);
+		}
+		const content = await readFile(filePath);
+		const metadataAfterRead = await this.supportedFamilyFileMetadata(filePath);
+		if (!this.familyLinkedFileMetadataMatches(metadataAfterRead, expected) || !content.equals(expected.content)) {
+			throw new Error(`Task family member ${taskId} no longer references its inventoried file: ${filePath}`);
+		}
+	}
+
+	private async loadStrictFamilyTaskDirectory(
+		directoryPath: string,
+		location: "active" | "completed",
+		taskPrefix: string,
+	): Promise<OrchestrationFamilyInventoryTask[]> {
+		let entries: Dirent<string>[];
+		try {
+			entries = await readdir(directoryPath, { withFileTypes: true });
+		} catch (error) {
+			throw new Error(`Task family could not inventory ${location} task directory: ${directoryPath}`, { cause: error });
+		}
+
+		const tasks: OrchestrationFamilyInventoryTask[] = [];
+		const pathsByIdentity = new Map<string, string>();
+		const artifactPrefix = `${taskPrefix.toLowerCase()}-`;
+		for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+			const lowerName = entry.name.toLowerCase();
+			if (!lowerName.endsWith(".md")) continue;
+			const filenameTaskId = extractTaskIdFromFilename(entry.name);
+			if (!filenameTaskId) {
+				if (lowerName.startsWith(artifactPrefix)) {
+					throw new Error(`Task family could not parse task artifact filename: ${join(directoryPath, entry.name)}`);
+				}
+				continue;
+			}
+			const filePath = join(directoryPath, entry.name);
+			let metadata: Awaited<ReturnType<typeof lstat>>;
+			try {
+				metadata = await this.supportedFamilyFileMetadata(filePath);
+			} catch (error) {
+				throw new Error(`Task family ${location} task artifact has unsupported file metadata: ${filePath}`, {
+					cause: error,
+				});
+			}
+			if ((metadata.mode & 0o444n) === 0n) {
+				throw new Error(`Task family could not read task artifact: ${filePath}`);
+			}
+
+			let content: Buffer;
+			try {
+				content = await readFile(filePath);
+			} catch (error) {
+				throw new Error(`Task family could not read task artifact: ${filePath}`, { cause: error });
+			}
+			const metadataAfterRead = await this.supportedFamilyFileMetadata(filePath);
+			if (
+				metadata.dev !== metadataAfterRead.dev ||
+				metadata.ino !== metadataAfterRead.ino ||
+				metadata.mode !== metadataAfterRead.mode ||
+				metadata.size !== metadataAfterRead.size ||
+				metadata.mtimeNs !== metadataAfterRead.mtimeNs ||
+				metadata.ctimeNs !== metadataAfterRead.ctimeNs
+			) {
+				throw new Error(`Task family task artifact changed while loading: ${filePath}`);
+			}
+
+			let task: Task;
+			try {
+				task = normalizeTaskIdentity(parseTask(content.toString("utf8")));
+			} catch (error) {
+				throw new Error(`Task family could not parse task artifact: ${filePath}`, { cause: error });
+			}
+			if (!task.id.trim() || !task.title.trim() || !task.status.trim()) {
+				throw new Error(`Task family could not parse task artifact: ${filePath}`);
+			}
+			if (!taskIdsEqual(filenameTaskId, task.id)) {
+				throw new Error(
+					`Task family ${location} task artifact identity is ambiguous: filename ${filenameTaskId} does not match frontmatter ${task.id}.`,
+				);
+			}
+
+			const identity = canonicalTaskId(task.id);
+			const existingPath = pathsByIdentity.get(identity);
+			if (existingPath) {
+				throw new Error(
+					`Task family ${location} inventory has ambiguous task identity ${identity}: ${existingPath}, ${filePath}`,
+				);
+			}
+			pathsByIdentity.set(identity, filePath);
+			tasks.push({
+				...task,
+				filePath,
+				[orchestrationFamilyFileSnapshot]: this.familyFileSnapshot(metadataAfterRead, content),
+			});
+		}
+		return tasks;
+	}
+
+	private async loadStrictFamilyTaskInventory(): Promise<{
+		tasks: OrchestrationFamilyInventoryTask[];
+		completedTasks: OrchestrationFamilyInventoryTask[];
+	}> {
+		const taskPrefix = (await this.fs.loadConfig())?.prefixes?.task ?? "task";
+		const [tasks, completedTasks] = await Promise.all([
+			this.loadStrictFamilyTaskDirectory(this.fs.tasksDir, "active", taskPrefix),
+			this.loadStrictFamilyTaskDirectory(this.fs.completedDir, "completed", taskPrefix),
+		]);
+		return { tasks, completedTasks };
+	}
+
+	private async assertRecoverableFamilyMoveDuplicate(
+		sourcePath: string,
+		targetPath: string,
+		taskId: string,
+	): Promise<void> {
+		const [source, target] = await Promise.all([
+			this.supportedFamilyFileMetadata(sourcePath),
+			this.supportedFamilyFileMetadata(targetPath),
+		]);
+		if (source.dev === target.dev && source.ino === target.ino) return;
+		const [sourceBytes, targetBytes] = await Promise.all([readFile(sourcePath), readFile(targetPath)]);
+		if (!sourceBytes.equals(targetBytes)) {
+			throw new Error(`Task family member ${taskId} differs between active and completed storage.`);
+		}
+		throw new Error(`Task family member ${taskId} duplicate identity does not match the durable move.`);
+	}
+
+	private familyMoveStagePath(sourcePath: string, requestDigest: string): string {
+		return join(dirname(sourcePath), `.${basename(sourcePath)}.family-${requestDigest.slice(0, 16)}.move`);
+	}
+
+	private async familyPathExists(filePath: string): Promise<boolean> {
+		try {
+			await lstat(filePath);
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+	}
+
+	private async stageFamilyPathRemoval(
+		filePath: string,
+		expectedSnapshot: OrchestrationFamilyFileSnapshot,
+		taskId: string,
+	): Promise<{ directoryPath: string; stagedPath: string }> {
+		const parentPath = dirname(filePath);
+		const directoryPath = await mkdtemp(join(parentPath, ".family-remove-"));
+		const stagedPath = join(directoryPath, basename(filePath));
+		await this.fsyncDirectory(parentPath);
+		try {
+			await moveFile(filePath, stagedPath);
+			await this.fsyncDirectory(parentPath);
+			await this.assertFamilyLinkedFileSnapshot(stagedPath, expectedSnapshot, taskId);
+			return { directoryPath, stagedPath };
+		} catch (error) {
+			if ((await this.familyPathExists(stagedPath)) && !(await this.familyPathExists(filePath))) {
+				await link(stagedPath, filePath);
+				await this.fsyncDirectory(parentPath);
+				await unlink(stagedPath);
+			}
+			await rmdir(directoryPath).catch(() => undefined);
+			await this.fsyncDirectory(parentPath).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	private async finishFamilyPathRemoval(staged: { directoryPath: string; stagedPath: string }): Promise<void> {
+		await unlink(staged.stagedPath);
+		await this.fsyncDirectory(staged.directoryPath);
+		await rmdir(staged.directoryPath);
+		await this.fsyncDirectory(dirname(staged.directoryPath));
+	}
+
+	private async durableMoveFamilyMember(
+		sourcePath: string,
+		targetPath: string,
+		taskId: string,
+		expectedSnapshot: OrchestrationFamilyFileSnapshot,
+		requestDigest: string,
+	): Promise<string> {
+		const stagePath = this.familyMoveStagePath(sourcePath, requestDigest);
+		if (await this.familyPathExists(stagePath)) {
+			await this.assertFamilyLinkedFileSnapshot(stagePath, expectedSnapshot, taskId);
+		} else {
+			await this.injectFamilyCompletionFault("move.before_stage", taskId);
+			await moveFile(sourcePath, stagePath);
+			try {
+				await this.assertFamilyLinkedFileSnapshot(stagePath, expectedSnapshot, taskId);
+			} catch (error) {
+				const replacementSnapshot = await this.captureFamilyFileSnapshot(stagePath, taskId);
+				await link(stagePath, sourcePath);
+				await this.fsyncDirectory(dirname(sourcePath));
+				const stagedReplacement = await this.stageFamilyPathRemoval(stagePath, replacementSnapshot, taskId);
+				await this.finishFamilyPathRemoval(stagedReplacement);
+				throw error;
+			}
+			await this.fsyncDirectory(dirname(sourcePath));
+		}
+		if (await this.familyPathExists(targetPath)) {
+			await this.assertFamilyLinkedFileSnapshot(targetPath, expectedSnapshot, taskId);
+		} else {
+			await link(stagePath, targetPath);
+		}
+		await this.injectFamilyCompletionFault("move.target_linked", taskId);
+		await this.assertFamilyLinkedFileSnapshot(targetPath, expectedSnapshot, taskId);
+		await this.fsyncDirectory(dirname(targetPath));
+		await this.injectFamilyCompletionFault("move.target_directory_synced", taskId);
+		await this.injectFamilyCompletionFault("move.source_unlinked", taskId);
+		await this.fsyncDirectory(dirname(sourcePath));
+		await this.injectFamilyCompletionFault("move.source_directory_synced", taskId);
+		return stagePath;
+	}
+
+	private async cleanupFamilyMoveStage(
+		stagePath: string,
+		targetPath: string,
+		taskId: string,
+		expectedSnapshot: OrchestrationFamilyFileSnapshot,
+	): Promise<void> {
+		if (!(await this.familyPathExists(stagePath))) return;
+		await this.assertFamilyLinkedFileSnapshot(targetPath, expectedSnapshot, taskId);
+		await this.injectFamilyCompletionFault("move.before_stage_unlink", taskId);
+		const stagedMove = await this.stageFamilyPathRemoval(stagePath, expectedSnapshot, taskId);
+		await this.finishFamilyPathRemoval(stagedMove);
+	}
+
+	private async restoreFamilyMove(
+		sourcePath: string,
+		targetPath: string,
+		stagePath: string,
+		taskId: string,
+		expectedSnapshot?: OrchestrationFamilyFileSnapshot,
+	): Promise<void> {
+		const stageExists = await this.familyPathExists(stagePath);
+		if (stageExists && expectedSnapshot) {
+			await this.assertFamilyLinkedFileSnapshot(stagePath, expectedSnapshot, taskId);
+			let sourceSnapshot: OrchestrationFamilyFileSnapshot | undefined;
+			if (await this.familyPathExists(sourcePath)) {
+				try {
+					await this.assertFamilyLinkedFileSnapshot(sourcePath, expectedSnapshot, taskId);
+					sourceSnapshot = expectedSnapshot;
+				} catch {
+					sourceSnapshot = await this.captureFamilyFileSnapshot(sourcePath, taskId);
+				}
+			}
+			if (await this.familyPathExists(targetPath)) {
+				let targetSnapshot: OrchestrationFamilyFileSnapshot;
+				try {
+					await this.assertFamilyLinkedFileSnapshot(targetPath, expectedSnapshot, taskId);
+					targetSnapshot = expectedSnapshot;
+				} catch {
+					targetSnapshot = await this.captureFamilyFileSnapshot(targetPath, taskId);
+				}
+				if (sourceSnapshot) {
+					const sourceIsExpected = this.familyLinkedFileSnapshotMatches(sourceSnapshot, expectedSnapshot);
+					const targetIsExpected = this.familyLinkedFileSnapshotMatches(targetSnapshot, expectedSnapshot);
+					if (sourceIsExpected) {
+						await this.assertFamilyLinkedFileSnapshot(sourcePath, targetSnapshot, taskId);
+					} else if (!targetIsExpected) {
+						throw new Error(`Cannot roll back task family member ${taskId}: both semantic paths changed.`);
+					}
+				} else {
+					await link(targetPath, sourcePath);
+					await this.fsyncDirectory(dirname(sourcePath));
+				}
+				const stagedTarget = await this.stageFamilyPathRemoval(targetPath, targetSnapshot, taskId);
+				await this.finishFamilyPathRemoval(stagedTarget);
+			} else if (sourceSnapshot) {
+				await this.assertFamilyLinkedFileSnapshot(sourcePath, sourceSnapshot, taskId);
+			} else {
+				await link(stagePath, sourcePath);
+				await this.fsyncDirectory(dirname(sourcePath));
+			}
+			const stagedMove = await this.stageFamilyPathRemoval(stagePath, expectedSnapshot, taskId);
+			await this.finishFamilyPathRemoval(stagedMove);
+			return;
+		}
+		const [sourceExists, targetExists] = await Promise.all([
+			stat(sourcePath).then(
+				() => true,
+				(error: NodeJS.ErrnoException) => {
+					if (error.code === "ENOENT") return false;
+					throw error;
+				},
+			),
+			stat(targetPath).then(
+				() => true,
+				(error: NodeJS.ErrnoException) => {
+					if (error.code === "ENOENT") return false;
+					throw error;
+				},
+			),
+		]);
+		if (sourceExists && targetExists) {
+			if (expectedSnapshot) {
+				await this.assertFamilyLinkedFileSnapshot(targetPath, expectedSnapshot, taskId);
+			} else {
+				await this.assertRecoverableFamilyMoveDuplicate(sourcePath, targetPath, taskId);
+			}
+			const targetSnapshot = expectedSnapshot ?? (await this.captureFamilyFileSnapshot(targetPath, taskId));
+			const stagedTarget = await this.stageFamilyPathRemoval(targetPath, targetSnapshot, taskId);
+			await this.finishFamilyPathRemoval(stagedTarget);
+			return;
+		}
+		if (sourceExists) return;
+		if (!targetExists) throw new Error(`Cannot roll back task family member ${taskId}: both paths are missing.`);
+		const targetSnapshot = await this.captureFamilyFileSnapshot(targetPath, taskId);
+		await link(targetPath, sourcePath);
+		await this.fsyncDirectory(dirname(sourcePath));
+		const stagedTarget = await this.stageFamilyPathRemoval(targetPath, targetSnapshot, taskId);
+		await this.finishFamilyPathRemoval(stagedTarget);
+	}
+
+	private async commitFamilyCompletion(
+		familyRootTaskId: string,
+		moves: Array<{ sourcePath: string; targetPath: string }>,
+	): Promise<void> {
+		const repoRoot = await this.git.stageFileMoves(moves);
+		await this.injectFamilyCompletionFault("git.before_commit");
+		await this.git.commitFiles(
+			`backlog: Complete task family ${normalizeTaskId(familyRootTaskId)}`,
+			moves.flatMap((move) => [move.sourcePath, move.targetPath]),
+			repoRoot,
+		);
+		await this.injectFamilyCompletionFault("git.after_commit");
+	}
+
+	async completeOrchestrationTaskFamily(
+		input: OrchestrationFamilyCompleteInput,
+	): Promise<OrchestrationFamilyCompleteResult> {
+		const familyRootTaskId = input.familyRootTaskId.trim();
+		const idempotencyKey = input.idempotencyKey.trim();
+		const actorSessionId = input.actorSessionId?.trim();
+		if (!familyRootTaskId) throw new Error("familyRootTaskId is required.");
+		if (!idempotencyKey) throw new Error("idempotencyKey is required.");
+		if (input.actorRole !== "orchestrator") {
+			throw new Error("Only an orchestrator may complete a task family.");
+		}
+		if (!Array.isArray(input.members) || input.members.length === 0) {
+			throw new Error("Task family membership must not be empty.");
+		}
+		if (input.members.length > ORCHESTRATION_FAMILY_MAX_MEMBERS) {
+			throw new Error(`Task family membership exceeds ${ORCHESTRATION_FAMILY_MAX_MEMBERS} members.`);
+		}
+		const configuredStatuses = await resolveValidStatuses(this);
+		const terminalStatus = getTerminalStatus(configuredStatuses);
+		if (!terminalStatus) throw new Error("Task family completion requires a configured terminal status.");
+		const canonicalStatusByKey = new Map(
+			configuredStatuses.map((status) => [status.trim().toLowerCase().replace(/\s+/g, ""), status] as const),
+		);
+
+		const seenMemberIds = new Set<string>();
+		const members = input.members.map((member, index) => {
+			if (!member || typeof member !== "object") throw new Error(`Task family member ${index + 1} is invalid.`);
+			const taskId = member.taskId?.trim();
+			if (!taskId) throw new Error(`Task family member ${index + 1} taskId is required.`);
+			const key = canonicalTaskId(taskId);
+			if (seenMemberIds.has(key)) throw new Error(`Task family member ${taskId} is duplicated.`);
+			seenMemberIds.add(key);
+			const expectedStatus =
+				typeof member.expectedStatus === "string"
+					? canonicalStatusByKey.get(member.expectedStatus.trim().toLowerCase().replace(/\s+/g, ""))
+					: undefined;
+			if (expectedStatus !== terminalStatus) {
+				throw new Error(`Task family member ${taskId} expected status must be ${terminalStatus}.`);
+			}
+			if (!Number.isInteger(member.expectedRevision) || member.expectedRevision < 1) {
+				throw new Error(`Task family member ${taskId} expected revision must be a positive integer.`);
+			}
+			return { taskId, expectedStatus: terminalStatus, expectedRevision: member.expectedRevision };
+		});
+		const rootMembers = members.filter((member) => taskIdsEqual(member.taskId, familyRootTaskId));
+		if (rootMembers.length !== 1 || !taskIdsEqual(members.at(-1)?.taskId ?? "", familyRootTaskId)) {
+			throw new Error("Task family membership must contain the root exactly once and last.");
+		}
+		const canonicalRequest = {
+			familyRootTaskId,
+			members,
+			actorRole: input.actorRole,
+			...(actorSessionId && { actorSessionId }),
+			idempotencyKey,
+		};
+		const requestDigest = orchestrationRequestDigest(canonicalRequest);
+		const configuredAutoCommit = await this.shouldAutoCommit();
+
+		const assertAuthorizedSession = (root: Task, candidates: Task[]) => {
+			if (!root.orchestration || root.orchestration.executionId === "unbound") return;
+			if (!actorSessionId) {
+				throw new Error(`Task ${root.id} requires actorSessionId for orchestration family completion.`);
+			}
+			const executionParent = candidates.find(
+				(candidate) =>
+					candidate.orchestration?.executionId === root.orchestration?.executionId &&
+					candidate.orchestration?.role === "execution",
+			);
+			const authorizedSessionId = executionParent?.orchestration?.parentSessionId;
+			if (!authorizedSessionId) {
+				throw new Error(`Task ${root.id} has no authorized orchestrator session binding.`);
+			}
+			if (actorSessionId !== authorizedSessionId) {
+				throw new Error(`Task ${root.id} actorSessionId does not match the authorized orchestrator session.`);
+			}
+		};
+
+		const canonicalFamily = (
+			tasks: OrchestrationFamilyInventoryTask[],
+			root: OrchestrationFamilyInventoryTask,
+		): OrchestrationFamilyInventoryTask[] => {
+			const included = new Map<string, OrchestrationFamilyInventoryTask>([[canonicalTaskId(root.id), root]]);
+			let changed = true;
+			while (changed) {
+				changed = false;
+				for (const task of tasks) {
+					if (included.has(canonicalTaskId(task.id)) || !task.parentTaskId) continue;
+					if ([...included.values()].some((parent) => taskIdsEqual(task.parentTaskId as string, parent.id))) {
+						included.set(canonicalTaskId(task.id), task);
+						changed = true;
+					}
+				}
+			}
+			const descendants = [...included.values()].filter((task) => !taskIdsEqual(task.id, root.id));
+			descendants.sort((left, right) => {
+				const leftId = left.id.toLowerCase();
+				const rightId = right.id.toLowerCase();
+				return leftId < rightId ? -1 : leftId > rightId ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+			});
+			return [...descendants, root];
+		};
+
+		type FamilyStorage = { active?: OrchestrationFamilyInventoryTask; completed?: OrchestrationFamilyInventoryTask };
+		type FamilyMove = {
+			task: OrchestrationFamilyInventoryTask;
+			sourcePath: string;
+			targetPath: string;
+			stagePath?: string;
+			mode: number;
+			snapshot: OrchestrationFamilyFileSnapshot;
+			active: boolean;
+			completed: boolean;
+		};
+		const outcome = await this.withCreateLock(async () => {
+			await this.recoverInterruptedFamilyReceipt(familyRootTaskId, requestDigest, idempotencyKey);
+			const { tasks, completedTasks } = await this.loadStrictFamilyTaskInventory();
+			const activeRoot = tasks.find((task) => taskIdsEqual(task.id, familyRootTaskId));
+			const completedRoot = completedTasks.find((task) => taskIdsEqual(task.id, familyRootTaskId));
+			const root = completedRoot ?? activeRoot;
+			if (!root) throw new Error(`Task family root not found: ${familyRootTaskId}`);
+			const allTasks = [...tasks, ...completedTasks];
+			assertAuthorizedSession(root, allTasks);
+
+			const matchingReceipts = [activeRoot, completedRoot]
+				.filter((candidate): candidate is OrchestrationFamilyInventoryTask => candidate !== undefined)
+				.flatMap((candidate) => candidate.orchestration?.familyCompletionReceipts ?? [])
+				.filter((candidate) => candidate.idempotencyKey === idempotencyKey);
+			if (matchingReceipts.some((receipt) => receipt.requestDigest !== requestDigest)) {
+				throw new Error(`Task family ${root.id} idempotency key collision: request payload differs.`);
+			}
+			let preparedReceipt = matchingReceipts[0];
+			if (completedRoot && !preparedReceipt) throw new Error(`Task family ${completedRoot.id} is already completed.`);
+
+			const storageById = new Map<string, FamilyStorage>();
+			for (const task of tasks) {
+				const key = canonicalTaskId(task.id);
+				const storage = storageById.get(key) ?? {};
+				if (storage.active) throw new Error(`Task family member ${task.id} is duplicated in active storage.`);
+				storage.active = task;
+				storageById.set(key, storage);
+			}
+			for (const task of completedTasks) {
+				const key = canonicalTaskId(task.id);
+				const storage = storageById.get(key) ?? {};
+				if (storage.completed) throw new Error(`Task family member ${task.id} is duplicated in completed storage.`);
+				storage.completed = task;
+				storageById.set(key, storage);
+			}
+			const canonicalTasks = [...storageById.values()].map(
+				(storage) => storage.completed ?? (storage.active as OrchestrationFamilyInventoryTask),
+			);
+			const canonicalRoot = storageById.get(canonicalTaskId(root.id))?.completed ?? root;
+			const family = canonicalFamily(canonicalTasks, canonicalRoot);
+			const familyIds = family.map((task) => task.id);
+			if (familyIds.length !== members.length || familyIds.some((taskId, index) => taskId !== members[index]?.taskId)) {
+				throw new Error(
+					`Task family ${root.id} membership mismatch: expected ${familyIds.join(", ")}, received ${members
+						.map((member) => member.taskId)
+						.join(", ")}.`,
+				);
+			}
+			if (!preparedReceipt && family.some((task) => storageById.get(canonicalTaskId(task.id))?.completed)) {
+				throw new Error(`Task family ${root.id} is partially completed without a matching orchestration receipt.`);
+			}
+			if (
+				preparedReceipt &&
+				(preparedReceipt.completedMemberIds.length !== familyIds.length ||
+					preparedReceipt.completedMemberIds.some((taskId, index) => taskId !== familyIds[index]))
+			) {
+				throw new Error(`Task family ${root.id} membership mismatch: receipt no longer matches persisted membership.`);
+			}
+			for (const [key, storage] of storageById) {
+				if (!storage.active || !storage.completed) continue;
+				if (!preparedReceipt?.completedMemberIds.some((taskId) => canonicalTaskId(taskId) === key)) {
+					throw new Error(`Task family member ${storage.active.id} exists in both active and completed storage.`);
+				}
+				if (!storage.active.filePath || !storage.completed.filePath) {
+					throw new Error(`Task family member ${storage.active.id} has no persisted duplicate paths.`);
+				}
+				await this.assertRecoverableFamilyMoveDuplicate(
+					storage.active.filePath,
+					storage.completed.filePath,
+					storage.active.id,
+				);
+			}
+			if (root.orchestration && root.orchestration.executionId !== "unbound") {
+				for (const task of family) {
+					if (task.orchestration?.executionId !== root.orchestration.executionId) {
+						throw new Error(`Task family member ${task.id} belongs to a different orchestration execution.`);
+					}
+				}
+			}
+			for (let index = 0; index < family.length; index += 1) {
+				const task = family[index] as OrchestrationFamilyInventoryTask;
+				const member = members[index];
+				if (!member) throw new Error(`Task family ${root.id} membership mismatch.`);
+				const revision = task.revision ?? 1;
+				if (revision !== member.expectedRevision) {
+					throw new Error(`Task ${task.id} revision mismatch: expected ${member.expectedRevision}, found ${revision}.`);
+				}
+				if (task.status !== member.expectedStatus) {
+					throw new Error(`Task ${task.id} status mismatch: expected ${member.expectedStatus}, found ${task.status}.`);
+				}
+			}
+
+			const moves: FamilyMove[] = [];
+			for (const task of family) {
+				const storage = storageById.get(canonicalTaskId(task.id));
+				if (!storage) throw new Error(`Task family member storage not found: ${task.id}`);
+				const activePath = storage.active?.filePath;
+				const completedPath = storage.completed?.filePath;
+				const knownTask = storage.active ?? storage.completed;
+				if (!knownTask) throw new Error(`Task family member inventory not found: ${task.id}`);
+				const knownPath = activePath ?? completedPath;
+				if (!knownPath) throw new Error(`Task family member path not found: ${task.id}`);
+				const sourcePath = activePath ?? join(this.fs.tasksDir, basename(knownPath));
+				const targetPath = completedPath ?? join(this.fs.completedDir, basename(knownPath));
+				if (activePath && !completedPath) {
+					try {
+						await stat(targetPath);
+						throw new Error(`Task family member ${task.id} already has a completed target.`);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					}
+				}
+				const mode = Number((await this.supportedFamilyFileMetadata(knownPath)).mode & 0o777n);
+				const stagePath = this.familyMoveStagePath(sourcePath, requestDigest);
+				const persistedStagePath = (await this.familyPathExists(stagePath)) ? stagePath : undefined;
+				if (persistedStagePath) {
+					await this.assertFamilyLinkedFileSnapshot(
+						persistedStagePath,
+						knownTask[orchestrationFamilyFileSnapshot],
+						task.id,
+					);
+				}
+				moves.push({
+					task,
+					sourcePath,
+					targetPath,
+					...(persistedStagePath && { stagePath: persistedStagePath }),
+					mode,
+					snapshot: knownTask[orchestrationFamilyFileSnapshot],
+					active: activePath !== undefined,
+					completed: completedPath !== undefined,
+				});
+			}
+
+			const rootMove = moves.at(-1);
+			if (!rootMove) throw new Error(`Task family ${root.id} has no root move.`);
+			let rootOriginalSnapshot = preparedReceipt ? undefined : rootMove.snapshot;
+			const rootMode = preparedReceipt ? undefined : rootMove.mode;
+			const wasPrepared = preparedReceipt !== undefined;
+			let rootReceiptOriginalPath = preparedReceipt
+				? this.familyReceiptPaths(rootMove.sourcePath, requestDigest).originalPath
+				: undefined;
+			if (preparedReceipt && rootReceiptOriginalPath && (await this.familyPathExists(rootReceiptOriginalPath))) {
+				rootOriginalSnapshot = await this.captureFamilyFileSnapshot(rootReceiptOriginalPath, root.id);
+				if (
+					preparedReceipt.originalRootFileDigest !== this.familyFileContentDigest(rootOriginalSnapshot) ||
+					preparedReceipt.originalRootFileMode !== Number(rootOriginalSnapshot.mode & 0o777n)
+				) {
+					throw new Error(`Task family ${root.id} original receipt staging does not match its durable receipt.`);
+				}
+			}
+			let completedFamily: Task[] = [];
+			try {
+				if (!preparedReceipt) {
+					preparedReceipt = {
+						idempotencyKey,
+						requestDigest,
+						completedMemberIds: familyIds,
+						originalRootFileDigest: this.familyFileContentDigest(rootMove.snapshot),
+						originalRootFileMode: rootMove.mode,
+						autoCommit: configuredAutoCommit,
+					};
+					const rootWithReceipt: Task = {
+						...root,
+						orchestration: {
+							...(root.orchestration ?? { executionId: "unbound" }),
+							idempotencyKey,
+							familyCompletionReceipts: [
+								...(root.orchestration?.familyCompletionReceipts ?? []),
+								preparedReceipt,
+							].slice(-MAX_ORCHESTRATION_TRANSITION_RECEIPTS),
+						},
+					};
+					const publishedReceipt = await this.publishDurableFamilyReceipt(
+						rootMove.sourcePath,
+						serializeTask(rootWithReceipt),
+						requestDigest,
+						root.id,
+						rootMode as number,
+						rootMove.snapshot,
+					);
+					rootMove.snapshot = publishedReceipt.snapshot;
+					rootReceiptOriginalPath = publishedReceipt.originalPath;
+				}
+				for (const move of moves) {
+					if (move.active) {
+						await this.assertFamilyFileSnapshot(move.sourcePath, move.snapshot, move.task.id);
+						move.stagePath = await this.durableMoveFamilyMember(
+							move.sourcePath,
+							move.targetPath,
+							move.task.id,
+							move.snapshot,
+							requestDigest,
+						);
+					}
+				}
+
+				const finalInventory = await this.loadStrictFamilyTaskInventory();
+				const finalStorageById = new Map<string, FamilyStorage>();
+				for (const task of finalInventory.tasks) {
+					const key = canonicalTaskId(task.id);
+					const storage = finalStorageById.get(key) ?? {};
+					if (storage.active) throw new Error(`Task family member ${task.id} is duplicated in active storage.`);
+					storage.active = task;
+					finalStorageById.set(key, storage);
+				}
+				for (const task of finalInventory.completedTasks) {
+					const key = canonicalTaskId(task.id);
+					const storage = finalStorageById.get(key) ?? {};
+					if (storage.completed) throw new Error(`Task family member ${task.id} is duplicated in completed storage.`);
+					storage.completed = task;
+					finalStorageById.set(key, storage);
+				}
+				for (const member of members) {
+					const key = canonicalTaskId(member.taskId);
+					const storage = finalStorageById.get(key);
+					if (!storage?.completed || storage.active) {
+						throw new Error(
+							`Task family ${root.id} membership mismatch: ${member.taskId} is not completed exactly once after move.`,
+						);
+					}
+				}
+				const activeFamilyDescendants = finalInventory.tasks.filter(
+					(task) =>
+						task.parentTaskId &&
+						(taskIdsEqual(task.parentTaskId, familyRootTaskId) ||
+							familyIds.some((id) => taskIdsEqual(task.parentTaskId as string, id))),
+				);
+				if (activeFamilyDescendants.length > 0) {
+					throw new Error(
+						`Task family ${root.id} membership changed after inventory: active descendants ${activeFamilyDescendants.map((task) => task.id).join(", ")}.`,
+					);
+				}
+				const finalRoot = finalInventory.completedTasks.find((task) => taskIdsEqual(task.id, root.id));
+				if (!finalRoot) throw new Error(`Completed task family root not found after move: ${root.id}`);
+				const finalReceipt = finalRoot.orchestration?.familyCompletionReceipts?.find(
+					(receipt) => receipt.idempotencyKey === idempotencyKey && receipt.requestDigest === requestDigest,
+				);
+				if (
+					!finalReceipt ||
+					finalReceipt.completedMemberIds.length !== familyIds.length ||
+					finalReceipt.completedMemberIds.some((taskId, index) => taskId !== familyIds[index])
+				) {
+					throw new Error(`Task family ${root.id} membership mismatch: durable receipt does not match completion.`);
+				}
+				const finalCanonicalTasks = [...finalStorageById.values()].map(
+					(storage) => storage.completed ?? (storage.active as OrchestrationFamilyInventoryTask),
+				);
+				const finalFamily = canonicalFamily(finalCanonicalTasks, finalRoot);
+				const finalFamilyIds = finalFamily.map((task) => task.id);
+				if (
+					finalFamilyIds.length !== familyIds.length ||
+					finalFamilyIds.some((taskId, index) => taskId !== familyIds[index])
+				) {
+					throw new Error(
+						`Task family ${root.id} membership mismatch after move: expected ${familyIds.join(", ")}, found ${finalFamilyIds.join(", ")}.`,
+					);
+				}
+				completedFamily = moves.map((move, index) => {
+					const member = members[index];
+					const storage = finalStorageById.get(canonicalTaskId(move.task.id));
+					if (!member || !storage?.completed || storage.active) {
+						throw new Error(
+							`Task family ${root.id} membership mismatch: ${move.task.id} is not completed exactly once.`,
+						);
+					}
+					const completed = storage.completed;
+					if (completed.status !== member.expectedStatus || (completed.revision ?? 1) !== member.expectedRevision) {
+						throw new Error(`Task family member ${completed.id} status or revision changed after inventory.`);
+					}
+					if (
+						(completed.parentTaskId ?? "") !== (move.task.parentTaskId ?? "") ||
+						(completed.orchestration?.executionId ?? "") !== (move.task.orchestration?.executionId ?? "") ||
+						!this.familyLinkedFileSnapshotMatches(completed[orchestrationFamilyFileSnapshot], move.snapshot)
+					) {
+						throw new Error(`Task family member ${completed.id} changed after inventory.`);
+					}
+					const { [orchestrationFamilyFileSnapshot]: _snapshot, ...persisted } = completed;
+					return persisted;
+				});
+				for (const move of moves) {
+					if (move.stagePath) {
+						await this.cleanupFamilyMoveStage(move.stagePath, move.targetPath, move.task.id, move.snapshot);
+					}
+				}
+				if (rootOriginalSnapshot && rootReceiptOriginalPath) {
+					const stagedOriginal = await this.stageFamilyPathRemoval(
+						rootReceiptOriginalPath,
+						rootOriginalSnapshot,
+						root.id,
+					);
+					await this.finishFamilyPathRemoval(stagedOriginal);
+					rootOriginalSnapshot = undefined;
+					rootReceiptOriginalPath = undefined;
+				}
+
+				const settledInventory = await this.loadStrictFamilyTaskInventory();
+				const settledRoot = settledInventory.completedTasks.find((task) => taskIdsEqual(task.id, root.id));
+				if (!settledRoot) throw new Error(`Completed task family root not found after cleanup: ${root.id}`);
+				const settledFamily = canonicalFamily(
+					[...settledInventory.tasks, ...settledInventory.completedTasks],
+					settledRoot,
+				);
+				const settledFamilyIds = settledFamily.map((task) => task.id);
+				if (
+					settledFamilyIds.length !== familyIds.length ||
+					settledFamilyIds.some((taskId, index) => taskId !== familyIds[index])
+				) {
+					throw new Error(
+						`Task family ${root.id} membership mismatch after cleanup: expected ${familyIds.join(", ")}, found ${settledFamilyIds.join(", ")}.`,
+					);
+				}
+				completedFamily = moves.map((move, index) => {
+					const member = members[index];
+					const active = settledInventory.tasks.find((task) => taskIdsEqual(task.id, move.task.id));
+					const completed = settledInventory.completedTasks.find((task) => taskIdsEqual(task.id, move.task.id));
+					if (!member || active || !completed) {
+						throw new Error(`Task family ${root.id} membership mismatch: ${move.task.id} is not settled exactly once.`);
+					}
+					if (
+						completed.status !== member.expectedStatus ||
+						(completed.revision ?? 1) !== member.expectedRevision ||
+						(completed.parentTaskId ?? "") !== (move.task.parentTaskId ?? "") ||
+						(completed.orchestration?.executionId ?? "") !== (move.task.orchestration?.executionId ?? "") ||
+						!this.familyLinkedFileSnapshotMatches(completed[orchestrationFamilyFileSnapshot], move.snapshot)
+					) {
+						throw new Error(`Task family member ${completed.id} changed during final cleanup.`);
+					}
+					const { [orchestrationFamilyFileSnapshot]: _snapshot, ...persisted } = completed;
+					return persisted;
+				});
+			} catch (error) {
+				if (wasPrepared) throw error;
+				let rollbackError: unknown;
+				for (const move of [...moves].reverse()) {
+					try {
+						await this.restoreFamilyMove(
+							move.sourcePath,
+							move.targetPath,
+							move.stagePath ?? this.familyMoveStagePath(move.sourcePath, requestDigest),
+							move.task.id,
+							move.snapshot,
+						);
+					} catch (candidate) {
+						rollbackError ??= candidate;
+					}
+				}
+				if (rootOriginalSnapshot && rootReceiptOriginalPath) {
+					try {
+						await this.restoreDurableFamilyReceipt(
+							rootMove.sourcePath,
+							rootReceiptOriginalPath,
+							root.id,
+							rootOriginalSnapshot,
+							rootMove.snapshot,
+						);
+					} catch (candidate) {
+						rollbackError ??= candidate;
+					}
+				}
+				if (rollbackError) {
+					throw new Error(`Task family ${root.id} completion failed and rollback requires manual review.`, {
+						cause: rollbackError,
+					});
+				}
+				throw new Error(`Task family ${root.id} completion failed and was rolled back.`, { cause: error });
+			}
+			if (this.contentStore) await this.contentStore.refreshTasks();
+			return {
+				result: {
+					familyRootTaskId: root.id,
+					completedMemberIds: familyIds,
+					idempotentReplay: wasPrepared,
+				},
+				completedTasks: completedFamily,
+				commitMoves: moves.map(({ sourcePath, targetPath }) => ({ sourcePath, targetPath })),
+				autoCommit: preparedReceipt.autoCommit ?? configuredAutoCommit,
+			};
+		});
+
+		if (outcome.autoCommit) {
+			await this.commitFamilyCompletion(outcome.result.familyRootTaskId, outcome.commitMoves);
+		}
+		for (const task of outcome.completedTasks) {
+			await this.injectFamilyCompletionFault("lifecycle.before_publish", task.id);
+			await this.publishTaskLifecycleEvent("completed", task, {
+				actorRole: "orchestrator",
+				correlationId: task.orchestration?.executionId,
+				idempotencyKey: `family-complete:${requestDigest}:${task.id.toLowerCase()}`,
+				requireDelivery: true,
+			});
+			await this.injectFamilyCompletionFault("lifecycle.after_publish", task.id);
+		}
+		return outcome.result;
+	}
+
 	private async publishTaskLifecycleEvent(
 		action: TaskLifecycleEventAction,
 		task: Task,
@@ -2159,11 +3373,12 @@ export class Core {
 			actorRole?: "orchestrator" | "worker" | "reviewer";
 			correlationId?: string;
 			idempotencyKey?: string;
+			requireDelivery?: boolean;
 		},
 	): Promise<void> {
 		const config = await this.fs.loadConfig();
 		const projectName = config?.projectName?.trim();
-		await this.taskNotifier.notify({
+		const event = {
 			action,
 			task,
 			...(projectName && { projectName }),
@@ -2172,7 +3387,15 @@ export class Core {
 			...(options?.actorRole !== undefined && { actorRole: options.actorRole }),
 			...(options?.correlationId !== undefined && { correlationId: options.correlationId }),
 			...(options?.idempotencyKey !== undefined && { idempotencyKey: options.idempotencyKey }),
-		});
+		};
+		if (options?.requireDelivery) {
+			if (typeof this.taskNotifier.notifyRequired !== "function") {
+				throw new Error("Task lifecycle notifier does not support required lifecycle delivery.");
+			}
+			await this.taskNotifier.notifyRequired(event);
+			return;
+		}
+		await this.taskNotifier.notify(event);
 	}
 
 	private async applyTaskUpdateInput(

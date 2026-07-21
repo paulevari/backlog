@@ -8,6 +8,24 @@ import { createUniqueTestDir, initializeTestProject, safeCleanup } from "./test-
 let TEST_DIR: string;
 const CLI_PATH = join(process.cwd(), "src", "cli.ts");
 
+async function runCli(args: string[], stdin?: string) {
+	const environment: Record<string, string | undefined> = { ...process.env, NODE_ENV: "test" };
+	delete environment.BACKLOG_BELLEROPHON_NOTIFICATIONS;
+	const child = Bun.spawn(["bun", CLI_PATH, ...args], {
+		cwd: TEST_DIR,
+		env: environment,
+		stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const [exitCode, stdout, stderr] = await Promise.all([
+		child.exited,
+		new Response(child.stdout).text(),
+		new Response(child.stderr).text(),
+	]);
+	return { exitCode, stdout, stderr };
+}
+
 describe("CLI Integration", () => {
 	beforeEach(async () => {
 		TEST_DIR = createUniqueTestDir("test-cli");
@@ -154,6 +172,198 @@ describe("CLI Integration", () => {
 
 			const completedTasks = await core.filesystem.listCompletedTasks();
 			expect(completedTasks.some((task) => task.id === "TASK-4")).toBe(false);
+		});
+
+		it("atomically defers a task with an exact guarded description replacement", async () => {
+			const core = new Core(TEST_DIR);
+			const config = await core.fs.loadConfig();
+			if (!config) throw new Error("Expected config");
+			await core.fs.saveConfig({
+				...config,
+				statuses: ["Backlog", "Active", "In Progress", "Review", "Approved", "Human", "Deferred", "Done"],
+			});
+			const { task } = await core.createTaskFromInput({
+				title: "Deferred CLI task",
+				status: "Backlog",
+				description: "Original description",
+				acceptanceCriteria: [{ text: "External release is observable" }],
+				definitionOfDoneAdd: ["Release digest is verified"],
+				disableDefinitionOfDoneDefaults: true,
+			});
+			const description = "Unblock when: release 7 is observable.\n\nVerify the published digest.";
+
+			const result =
+				await $`bun ${CLI_PATH} task transition ${task.id} --expected-status Backlog --expected-revision 1 --target-status Deferred --actor-role orchestrator --idempotency-key defer:cli --description ${description} --json`
+					.cwd(TEST_DIR)
+					.nothrow()
+					.quiet();
+			const output = result.stdout.toString() + result.stderr.toString();
+
+			if (result.exitCode !== 0) throw new Error(output);
+			expect(result.exitCode).toBe(0);
+			expect(JSON.parse(output)).toMatchObject({ status: "Deferred", revision: 2, description });
+			expect(await core.fs.loadTask(task.id)).toMatchObject({ status: "Deferred", revision: 2, description });
+		});
+
+		it("completes a guarded Done family through the semantic CLI", async () => {
+			const core = new Core(TEST_DIR);
+			await core.createTask(
+				{
+					id: "TASK-30",
+					title: "CLI family root",
+					status: "Done",
+					assignee: [],
+					createdDate: "2026-07-21",
+					labels: [],
+					dependencies: [],
+					rawContent: "",
+					revision: 2,
+					orchestration: { executionId: "unbound" },
+				},
+				false,
+			);
+			await core.createTask(
+				{
+					id: "TASK-30.1",
+					title: "CLI family child",
+					status: "Done",
+					assignee: [],
+					createdDate: "2026-07-21",
+					labels: [],
+					dependencies: [],
+					parentTaskId: "TASK-30",
+					rawContent: "",
+					revision: 3,
+					orchestration: { executionId: "unbound" },
+				},
+				false,
+			);
+			const members = JSON.stringify([
+				{ taskId: "TASK-30.1", expectedStatus: "Done", expectedRevision: 3 },
+				{ taskId: "TASK-30", expectedStatus: "Done", expectedRevision: 2 },
+			]);
+
+			const result =
+				await $`bun ${CLI_PATH} task family-complete TASK-30 --members ${members} --actor-role orchestrator --idempotency-key family:cli --json`
+					.cwd(TEST_DIR)
+					.nothrow()
+					.quiet();
+			const output = result.stdout.toString() + result.stderr.toString();
+
+			if (result.exitCode !== 0) throw new Error(output);
+			expect(result.exitCode).toBe(0);
+			expect(JSON.parse(output)).toEqual({
+				familyRootTaskId: "TASK-30",
+				completedMemberIds: ["TASK-30.1", "TASK-30"],
+				idempotentReplay: false,
+			});
+			expect(await core.fs.listTasks()).toHaveLength(0);
+			expect((await core.fs.listCompletedTasks()).map((task) => task.id).sort()).toEqual(["TASK-30", "TASK-30.1"]);
+		});
+
+		it("completes a three-member guarded family from bounded stdin", async () => {
+			const core = new Core(TEST_DIR);
+			for (const task of [
+				{ id: "TASK-31", title: "stdin family root", revision: 2 },
+				{ id: "TASK-31.1", title: "stdin family child one", revision: 3, parentTaskId: "TASK-31" },
+				{ id: "TASK-31.2", title: "stdin family child two", revision: 4, parentTaskId: "TASK-31" },
+			]) {
+				await core.createTask(
+					{
+						...task,
+						status: "Done",
+						assignee: [],
+						createdDate: "2026-07-21",
+						labels: [],
+						dependencies: [],
+						rawContent: "",
+						orchestration: { executionId: "unbound" },
+					},
+					false,
+				);
+			}
+			const members = JSON.stringify([
+				{ taskId: "TASK-31.1", expectedStatus: "Done", expectedRevision: 3 },
+				{ taskId: "TASK-31.2", expectedStatus: "Done", expectedRevision: 4 },
+				{ taskId: "TASK-31", expectedStatus: "Done", expectedRevision: 2 },
+			]);
+
+			const result = await runCli(
+				[
+					"task",
+					"family-complete",
+					"TASK-31",
+					"--members",
+					"-",
+					"--actor-role",
+					"orchestrator",
+					"--idempotency-key",
+					"family:stdin-count3",
+					"--json",
+				],
+				members,
+			);
+
+			expect(result.exitCode, result.stderr).toBe(0);
+			expect(JSON.parse(result.stdout)).toEqual({
+				familyRootTaskId: "TASK-31",
+				completedMemberIds: ["TASK-31.1", "TASK-31.2", "TASK-31"],
+				idempotentReplay: false,
+			});
+		});
+
+		it("accepts family membership above the argv limit through bounded stdin", async () => {
+			const members = [
+				...Array.from({ length: 1023 }, (_, index) => ({
+					taskId: `TASK-999.${String(index + 1).padStart(150, "0")}`,
+					expectedStatus: "Done",
+					expectedRevision: 1,
+				})),
+				{ taskId: "TASK-999", expectedStatus: "Done", expectedRevision: 1 },
+			];
+			const encoded = JSON.stringify(members);
+			expect(new TextEncoder().encode(encoded).byteLength).toBeGreaterThan(128 * 1024);
+
+			const result = await runCli(
+				[
+					"task",
+					"family-complete",
+					"TASK-999",
+					"--members",
+					"-",
+					"--actor-role",
+					"orchestrator",
+					"--idempotency-key",
+					"family:stdin-large",
+					"--json",
+				],
+				encoded,
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("Task family root not found: TASK-999");
+			expect(result.stderr).not.toContain("1 MiB");
+		});
+
+		it("rejects family membership above one MiB before parsing", async () => {
+			const result = await runCli(
+				[
+					"task",
+					"family-complete",
+					"TASK-999",
+					"--members",
+					"-",
+					"--actor-role",
+					"orchestrator",
+					"--idempotency-key",
+					"family:stdin-oversized",
+				],
+				`[{"taskId":"${"x".repeat(1_048_576)}"}]`,
+			);
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("1 MiB");
+			expect(result.stderr).not.toContain("JSON");
 		});
 
 		it("should demote task to drafts", async () => {

@@ -689,25 +689,46 @@ export class GitOperations {
 		return null;
 	}
 	async stageFileMove(fromPath: string, toPath: string): Promise<string | null> {
-		const toContext = await this.getPathContext(toPath);
-		const repoRoot = toContext?.repoRoot ?? this.projectRoot;
+		return await this.stageFileMoves([{ sourcePath: fromPath, targetPath: toPath }]);
+	}
+
+	async stageFileMoves(moves: readonly { sourcePath: string; targetPath: string }[]): Promise<string | null> {
+		if (moves.length === 0) return null;
+		const firstMove = moves[0];
+		if (!firstMove) return null;
+		const firstTargetContext = await this.getPathContext(firstMove.targetPath);
+		const repoRoot = firstTargetContext?.repoRoot ?? this.projectRoot;
 		if (!(await this.isRepository(repoRoot))) {
 			return null;
 		}
-		const relativeFrom = await this.getRelativePathForRepo(fromPath, repoRoot);
-		const relativeTo = toContext?.relativePath ?? (await this.getRelativePathForRepo(toPath, repoRoot));
 
-		// Stage the deletion of the old file and addition of the new file
-		// Git will automatically detect this as a rename if the content is similar enough
-		try {
-			// First try to stage the removal of the old file (if it still exists)
-			await this.execGit(["add", "--all", relativeFrom ?? fromPath], { cwd: repoRoot });
-		} catch {
-			// If the old file doesn't exist, that's okay - it was already moved
+		const paths = new Set<string>();
+		for (const move of moves) {
+			const targetContext = await this.getPathContext(move.targetPath);
+			if (targetContext && targetContext.repoRoot !== repoRoot) {
+				throw new Error("Cannot stage file moves across multiple Git repositories");
+			}
+			const relativeTarget =
+				targetContext?.relativePath ?? (await this.getRelativePathForRepo(move.targetPath, repoRoot));
+			if (!relativeTarget) throw new Error(`Cannot resolve moved file target in Git repository: ${move.targetPath}`);
+			paths.add(relativeTarget);
+
+			const sourceEntries = await this.getIndexEntries(move.sourcePath);
+			const sourceExists = await stat(move.sourcePath).then(
+				() => true,
+				(error: NodeJS.ErrnoException) => {
+					if (error.code === "ENOENT") return false;
+					throw error;
+				},
+			);
+			if (sourceEntries.length > 0 || sourceExists) {
+				const relativeSource = await this.getRelativePathForRepo(move.sourcePath, repoRoot);
+				if (!relativeSource) throw new Error(`Cannot resolve moved file source in Git repository: ${move.sourcePath}`);
+				paths.add(relativeSource);
+			}
 		}
 
-		// Always stage the new file location
-		await this.execGit(["add", relativeTo ?? toPath], { cwd: repoRoot });
+		await this.execGit(["add", "--all", "--", ...paths], { cwd: repoRoot });
 		return repoRoot === this.projectRoot ? null : repoRoot;
 	}
 
@@ -1102,7 +1123,8 @@ export class GitOperations {
 			env,
 		});
 		if (options?.input !== undefined && subprocess.stdin) {
-			subprocess.stdin.write(options.input);
+			await subprocess.stdin.write(options.input);
+			await subprocess.stdin.flush();
 			await subprocess.stdin.end();
 		}
 

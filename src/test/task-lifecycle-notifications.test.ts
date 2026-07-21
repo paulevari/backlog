@@ -39,6 +39,7 @@ describe("task lifecycle notifications", () => {
 				notify: async (event: unknown) => {
 					events.push(event);
 				},
+				notifyRequired: async () => undefined,
 			},
 		});
 		await initializeTestProject(core, "Lifecycle Notifications");

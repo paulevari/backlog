@@ -50,7 +50,9 @@ import {
 	type DraftSearchResult,
 	isLocalEditableTask,
 	type Milestone,
+	ORCHESTRATION_FAMILY_REQUEST_MAX_BYTES,
 	type OrchestrationActorRole,
+	type OrchestrationFamilyMemberInput,
 	type SearchPriorityFilter,
 	type SearchResult,
 	type SearchResultType,
@@ -199,14 +201,34 @@ const DOCUMENT_SEARCH_LIMIT_MAX = 100;
 const TASK_SORT_FIELDS = ["priority", "id", "ordinal"];
 const TASK_SORT_FIELD_LIST = TASK_SORT_FIELDS.join(", ");
 const TASK_TYPE_EXAMPLE = JSON.stringify(getCliTaskTypeValues()[0] ?? "<configured-type>");
-const ORCHESTRATION_GRAPH_INPUT_MAX_BYTES = 1024 * 1024;
-
-async function readOrchestrationGraphInput(value: string): Promise<string> {
-	const input = value === "-" ? await Bun.stdin.text() : value;
-	if (new TextEncoder().encode(input).byteLength > ORCHESTRATION_GRAPH_INPUT_MAX_BYTES) {
-		throw new Error("Orchestration graph input exceeds the 1 MiB limit.");
+async function readBoundedOrchestrationJsonInput(value: string, label: string): Promise<string> {
+	if (value !== "-") {
+		if (new TextEncoder().encode(value).byteLength > ORCHESTRATION_FAMILY_REQUEST_MAX_BYTES) {
+			throw new Error(`${label} exceeds the 1 MiB limit.`);
+		}
+		return value;
 	}
-	return input;
+
+	const reader = Bun.stdin.stream().getReader();
+	const chunks: Uint8Array[] = [];
+	let byteLength = 0;
+	while (true) {
+		const chunk = await reader.read();
+		if (chunk.done) break;
+		byteLength += chunk.value.byteLength;
+		if (byteLength > ORCHESTRATION_FAMILY_REQUEST_MAX_BYTES) {
+			await reader.cancel();
+			throw new Error(`${label} exceeds the 1 MiB limit.`);
+		}
+		chunks.push(chunk.value);
+	}
+	const input = new Uint8Array(byteLength);
+	let offset = 0;
+	for (const chunk of chunks) {
+		input.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(input);
 }
 
 async function openUrlInBrowser(url: string): Promise<void> {
@@ -1733,7 +1755,10 @@ function getTaskReadOutputMode(options: { json?: boolean; plain?: boolean }): Re
 }
 
 taskCmd.hook("preSubcommand", (command, subcommand) => {
-	if (command.opts().json && !["list", "view", "validate", "graph", "transition"].includes(subcommand.name())) {
+	if (
+		command.opts().json &&
+		!["list", "view", "validate", "graph", "transition", "family-complete"].includes(subcommand.name())
+	) {
 		command.error("error: unknown option '--json'", { code: "commander.unknownOption", exitCode: 1 });
 	}
 });
@@ -1749,7 +1774,9 @@ taskGraphCmd
 		try {
 			const cwd = await requireProjectRoot();
 			const core = new Core(cwd);
-			const request = JSON.parse(await readOrchestrationGraphInput(options.input)) as TaskGraphMaterializeInput;
+			const request = JSON.parse(
+				await readBoundedOrchestrationJsonInput(options.input, "Orchestration graph input"),
+			) as TaskGraphMaterializeInput;
 			console.log(JSON.stringify(await core.materializeTaskGraph(request), null, 2));
 		} catch (error) {
 			console.error(error instanceof Error ? error.message : String(error));
@@ -1803,6 +1830,7 @@ taskCmd
 	.option("--orchestration <json>", "orchestration metadata patch")
 	.option("--implementation-notes <text>")
 	.option("--final-summary <text>")
+	.option("--description <text>", "exact description replacement for a guarded Backlog to Deferred transition")
 	.option("--json", "emit machine-readable JSON")
 	.action(
 		async (
@@ -1817,6 +1845,7 @@ taskCmd
 				orchestration?: string;
 				implementationNotes?: string;
 				finalSummary?: string;
+				description?: string;
 				json?: boolean;
 			},
 		) => {
@@ -1846,8 +1875,53 @@ taskCmd
 						implementationNotes: options.implementationNotes,
 					}),
 					...(options.finalSummary !== undefined && { finalSummary: options.finalSummary }),
+					...(options.description !== undefined && { description: options.description }),
 				});
 				console.log(JSON.stringify(task, null, 2));
+			} catch (error) {
+				console.error(error instanceof Error ? error.message : String(error));
+				process.exitCode = 1;
+			}
+		},
+	);
+
+taskCmd
+	.command("family-complete <familyRootTaskId>")
+	.description("atomically complete an exact revision-guarded Done task family")
+	.requiredOption("--members <json>", "canonical child-first, root-last member snapshots, or - for bounded stdin")
+	.requiredOption("--actor-role <role>", "orchestrator")
+	.option("--actor-session-id <id>", "authenticated orchestrator session ID")
+	.requiredOption("--idempotency-key <key>")
+	.option("--json", "emit machine-readable JSON")
+	.action(
+		async (
+			familyRootTaskId: string,
+			options: {
+				members: string;
+				actorRole: OrchestrationActorRole;
+				actorSessionId?: string;
+				idempotencyKey: string;
+				json?: boolean;
+			},
+		) => {
+			try {
+				if (options.actorRole !== "orchestrator") {
+					throw new Error("actor-role must be orchestrator for family completion.");
+				}
+				const members = JSON.parse(
+					await readBoundedOrchestrationJsonInput(options.members, "Task family membership"),
+				) as OrchestrationFamilyMemberInput[];
+				if (!Array.isArray(members)) throw new Error("members must be a JSON array.");
+				const cwd = await requireProjectRoot();
+				const core = new Core(cwd);
+				const result = await core.completeOrchestrationTaskFamily({
+					familyRootTaskId,
+					members,
+					actorRole: options.actorRole,
+					...(options.actorSessionId !== undefined && { actorSessionId: options.actorSessionId }),
+					idempotencyKey: options.idempotencyKey,
+				});
+				console.log(JSON.stringify(result, null, 2));
 			} catch (error) {
 				console.error(error instanceof Error ? error.message : String(error));
 				process.exitCode = 1;

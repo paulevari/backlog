@@ -37,12 +37,23 @@ export interface TaskCommentInput {
 }
 
 export type OrchestrationActorRole = "orchestrator" | "worker" | "reviewer";
+export const ORCHESTRATION_FAMILY_MAX_MEMBERS = 1024;
+export const ORCHESTRATION_FAMILY_REQUEST_MAX_BYTES = 1024 * 1024;
 
 export interface OrchestrationTransitionReceipt {
 	idempotencyKey: string;
 	requestDigest: string;
 	resultStatus: string;
 	resultRevision: number;
+}
+
+export interface OrchestrationFamilyCompletionReceipt {
+	idempotencyKey: string;
+	requestDigest: string;
+	completedMemberIds: string[];
+	originalRootFileDigest: string;
+	originalRootFileMode: number;
+	autoCommit?: boolean;
 }
 
 export interface TaskOrchestrationMetadata {
@@ -67,6 +78,7 @@ export interface TaskOrchestrationMetadata {
 	idempotencyKey?: string;
 	materializationRequestDigest?: string;
 	transitionReceipts?: OrchestrationTransitionReceipt[];
+	familyCompletionReceipts?: OrchestrationFamilyCompletionReceipt[];
 }
 
 export interface Task {
@@ -164,6 +176,27 @@ export interface OrchestrationTransitionInput {
 	orchestration?: Partial<TaskOrchestrationMetadata>;
 	implementationNotes?: string;
 	finalSummary?: string;
+	description?: string;
+}
+
+export interface OrchestrationFamilyMemberInput {
+	taskId: string;
+	expectedStatus: string;
+	expectedRevision: number;
+}
+
+export interface OrchestrationFamilyCompleteInput {
+	familyRootTaskId: string;
+	members: OrchestrationFamilyMemberInput[];
+	actorRole: OrchestrationActorRole;
+	actorSessionId?: string;
+	idempotencyKey: string;
+}
+
+export interface OrchestrationFamilyCompleteResult {
+	familyRootTaskId: string;
+	completedMemberIds: string[];
+	idempotentReplay: boolean;
 }
 
 export interface OrchestrationCapabilities {
@@ -175,6 +208,8 @@ export interface OrchestrationCapabilities {
 		orchestrationMetadata: true;
 		atomicGraphMaterialization: true;
 		guardedTransitions: true;
+		atomicDescriptionTransition: true;
+		atomicFamilyCompletion: true;
 	};
 	lifecycleEventVersions: [1, 2];
 	requiredStatuses: string[];
