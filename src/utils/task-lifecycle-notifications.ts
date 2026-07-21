@@ -109,9 +109,23 @@ export function scopedBellerophonSubject(baseSubject: string, projectName?: stri
 	return prefix ? `${prefix}.${baseSubject}` : baseSubject;
 }
 
+/**
+ * The task lifecycle notifier reads the Bellerophon connection URL with the
+ * following precedence:
+ *
+ *   1. `options.url` when supplied by a programmatic caller.
+ *   2. `BACKLOG_BELLEROPHON_URL` from the process environment, after trimming
+ *      surrounding whitespace; a whitespace-only value is treated as unset.
+ *   3. {@link DEFAULT_BELLEROPHON_URL} (`evari://localhost:9000`).
+ *
+ * Setting `BACKLOG_BELLEROPHON_NOTIFICATIONS=0` disables publication entirely;
+ * `BACKLOG_BELLEROPHON_SUBJECT_PREFIX` scopes the lifecycle subject without
+ * affecting the connection URL.
+ */
 export function createTaskLifecycleNotifier(options: TaskLifecycleNotifierOptions = {}): TaskLifecycleNotifier {
 	const connect = options.connect ?? defaultConnect;
-	const url = options.url ?? DEFAULT_BELLEROPHON_URL;
+	const envUrl = process.env.BACKLOG_BELLEROPHON_URL?.trim();
+	const url = options.url ?? (envUrl && envUrl.length > 0 ? envUrl : DEFAULT_BELLEROPHON_URL);
 	const now = options.now ?? (() => new Date().toISOString());
 	let disabled = false;
 

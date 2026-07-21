@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { mkdir } from "node:fs/promises";
 import { Core } from "../core/backlog.ts";
 import type { Task } from "../types/index.ts";
@@ -8,6 +8,35 @@ import {
 	TASK_LIFECYCLE_SUBJECT,
 } from "../utils/task-lifecycle-notifications.ts";
 import { createUniqueTestDir, initializeTestProject, safeCleanup } from "./test-utils.ts";
+
+const envUrlCases = [
+	{
+		name: "explicit options.url wins over BACKLOG_BELLEROPHON_URL",
+		env: "evari://env-host:1234",
+		optionUrl: "evari://option-host:5555",
+		expectedServers: "evari://option-host:5555",
+	},
+	{
+		name: "uses non-empty BACKLOG_BELLEROPHON_URL when no options.url is supplied",
+		env: "evari://env-host:1234",
+		expectedServers: "evari://env-host:1234",
+	},
+	{
+		name: "trims surrounding whitespace from BACKLOG_BELLEROPHON_URL",
+		env: "  evari://env-host:1234  \n",
+		expectedServers: "evari://env-host:1234",
+	},
+	{
+		name: "falls back to default when BACKLOG_BELLEROPHON_URL is whitespace-only",
+		env: "   ",
+		expectedServers: "evari://localhost:9000",
+	},
+	{
+		name: "falls back to default when BACKLOG_BELLEROPHON_URL is unset",
+		env: undefined,
+		expectedServers: "evari://localhost:9000",
+	},
+] as const;
 
 const sampleTask = (overrides: Partial<Task> = {}): Task => ({
 	id: "task-1",
@@ -192,5 +221,64 @@ describe("task lifecycle notifications", () => {
 		expect(scopedBellerophonSubject(TASK_LIFECYCLE_SUBJECT, "Test Project!")).toBe(
 			"Test-Project.backlog.task.lifecycle",
 		);
+	});
+
+	describe("URL resolution", () => {
+		let originalEnvUrl: string | undefined;
+		const capturedConnectOptions: Array<Record<string, unknown>> = [];
+
+		const captureConnect = async (options?: Record<string, unknown>) => {
+			capturedConnectOptions.push(options ?? {});
+			return {
+				publish: () => undefined,
+				flush: async () => undefined,
+				close: async () => undefined,
+			};
+		};
+
+		beforeAll(() => {
+			originalEnvUrl = process.env.BACKLOG_BELLEROPHON_URL;
+		});
+
+		beforeEach(() => {
+			capturedConnectOptions.length = 0;
+		});
+
+		afterEach(() => {
+			if (originalEnvUrl === undefined) {
+				delete process.env.BACKLOG_BELLEROPHON_URL;
+			} else {
+				process.env.BACKLOG_BELLEROPHON_URL = originalEnvUrl;
+			}
+		});
+
+		for (const tc of envUrlCases) {
+			it(`resolves ConnectionOptions.servers: ${tc.name}`, async () => {
+				if (tc.env === undefined) {
+					delete process.env.BACKLOG_BELLEROPHON_URL;
+				} else {
+					process.env.BACKLOG_BELLEROPHON_URL = tc.env;
+				}
+
+				const notifier = createTaskLifecycleNotifier({
+					connect: captureConnect,
+					...(tc.optionUrl !== undefined ? { url: tc.optionUrl } : {}),
+					now: () => "2026-06-29T12:00:00.000Z",
+					projectRoot: testDir,
+				});
+
+				await notifier.notify({ action: "created", task: sampleTask(), projectRoot: testDir });
+
+				expect(capturedConnectOptions).toEqual([
+					{
+						name: "backlog.md-task-lifecycle",
+						servers: tc.expectedServers,
+						timeout: 500,
+						reconnect: false,
+						maxReconnectAttempts: 0,
+					},
+				]);
+			});
+		}
 	});
 });
