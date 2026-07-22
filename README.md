@@ -346,6 +346,45 @@ For the full configuration reference (all options, default values, commands, and
 
 ---
 
+## <img src="./.github/cli-reference-256.png" alt="Lifecycle notifications" width="28" height="28" align="center"> Lifecycle notifications
+
+The CLI publishes task lifecycle events (create, status change, archive, complete) over [Bellerophon](https://github.com/myevari/bellerophon) for downstream consumers. Three environment variables control publication; all are optional.
+
+### `BACKLOG_BELLEROPHON_URL`
+
+Overrides the Bellerophon connection URL the CLI uses when publishing lifecycle events. The notifier resolves the URL with the following precedence — first match wins:
+
+1. `url` passed programmatically to `createTaskLifecycleNotifier({ url })`.
+2. `BACKLOG_BELLEROPHON_URL` from the process environment, with surrounding whitespace trimmed. A whitespace-only value is treated as unset.
+3. The built-in default `evari://localhost:9000`.
+
+```bash
+# Point the CLI at a remote Bellerophon host
+export BACKLOG_BELLEROPHON_URL="evari://bellerophon.internal:7422"
+```
+
+### `BACKLOG_BELLEROPHON_NOTIFICATIONS`
+
+Set to `0` to disable lifecycle publication entirely. The CLI still functions normally; only the side-channel publish is skipped. Any other value (or unset) leaves publication enabled.
+
+```bash
+# Suppress lifecycle publishing in this shell
+export BACKLOG_BELLEROPHON_NOTIFICATIONS=0
+```
+
+### `BACKLOG_BELLEROPHON_SUBJECT_PREFIX`
+
+Scopes the lifecycle subject without affecting the connection URL. The CLI normally prefixes the subject with the normalized project name (for example `My-Project.backlog.task.lifecycle`); set this variable to override that prefix, or to supply a prefix when no project name is available. The value is normalized the same way as a project name (non-alphanumerics collapse to `-`, leading/trailing dashes trimmed).
+
+```bash
+# Pin a fixed prefix for an external consumer
+export BACKLOG_BELLEROPHON_SUBJECT_PREFIX="ci-runner-42"
+```
+
+In test processes (`NODE_ENV=test` or `argv` containing `test`) publication is short-circuited regardless of these variables.
+
+---
+
 ## Troubleshooting
 
 ### Apple Silicon (macOS)

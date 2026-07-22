@@ -9,7 +9,14 @@ import {
 } from "../utils/task-lifecycle-notifications.ts";
 import { createUniqueTestDir, initializeTestProject, safeCleanup } from "./test-utils.ts";
 
-const envUrlCases = [
+type EnvUrlCase = {
+	name: string;
+	env: string | undefined;
+	optionUrl?: string;
+	expectedServers: string;
+};
+
+const envUrlCases: EnvUrlCase[] = [
 	{
 		name: "explicit options.url wins over BACKLOG_BELLEROPHON_URL",
 		env: "evari://env-host:1234",
@@ -36,7 +43,7 @@ const envUrlCases = [
 		env: undefined,
 		expectedServers: "evari://localhost:9000",
 	},
-] as const;
+];
 
 const sampleTask = (overrides: Partial<Task> = {}): Task => ({
 	id: "task-1",
