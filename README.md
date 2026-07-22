@@ -374,10 +374,10 @@ export BACKLOG_BELLEROPHON_NOTIFICATIONS=0
 
 ### `BACKLOG_BELLEROPHON_SUBJECT_PREFIX`
 
-Scopes the lifecycle subject without affecting the connection URL. The CLI normally prefixes the subject with the normalized project name (for example `My-Project.backlog.task.lifecycle`); set this variable to override that prefix, or to supply a prefix when no project name is available. The value is normalized the same way as a project name (non-alphanumerics collapse to `-`, leading/trailing dashes trimmed).
+Scopes the lifecycle subject without affecting the connection URL. The CLI normally prefixes the subject with the normalized project name (for example `My-Project.backlog.task.lifecycle`); this variable is used only when no project name is available, where it supplies the prefix instead (for example `ci-runner-42.backlog.task.lifecycle`). When a project name is present, this variable is ignored. The value is normalized the same way as a project name (non-alphanumerics collapse to `-`, leading/trailing dashes trimmed).
 
 ```bash
-# Pin a fixed prefix for an external consumer
+# Pin a fixed prefix for an external consumer (takes effect only without a project name)
 export BACKLOG_BELLEROPHON_SUBJECT_PREFIX="ci-runner-42"
 ```
 
