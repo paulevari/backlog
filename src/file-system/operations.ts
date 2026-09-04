@@ -1576,6 +1576,9 @@ ${description || `Milestone: ${title}`}`,
 					// Remove surrounding quotes if present, but preserve inner content
 					config.onStatusChange = value.replace(/^['"]|['"]$/g, "");
 					break;
+				case "ripple_command":
+					config.rippleCommand = value.replace(/^['"]|['"]$/g, "");
+					break;
 				case "task_prefix":
 					config.prefixes = { task: value.replace(/['"]/g, "") };
 					break;
@@ -1616,6 +1619,7 @@ ${description || `Milestone: ${title}`}`,
 			activeBranchDays: config.activeBranchDays,
 			teamLeadEnabled: config.teamLeadEnabled,
 			onStatusChange: config.onStatusChange,
+			rippleCommand: config.rippleCommand,
 			prefixes: config.prefixes,
 			backlogDirectory: config.backlogDirectory,
 		};
@@ -1657,6 +1661,7 @@ ${description || `Milestone: ${title}`}`,
 			...(typeof config.activeBranchDays === "number" ? [`active_branch_days: ${config.activeBranchDays}`] : []),
 			...(typeof config.teamLeadEnabled === "boolean" ? [`team_lead_enabled: ${config.teamLeadEnabled}`] : []),
 			...(config.onStatusChange ? [`onStatusChange: '${config.onStatusChange}'`] : []),
+			...(config.rippleCommand ? [`ripple_command: '${config.rippleCommand}'`] : []),
 			...(config.prefixes?.task ? [`task_prefix: "${config.prefixes.task}"`] : []),
 			...(config.backlogDirectory ? [`backlog_directory: "${config.backlogDirectory}"`] : []),
 		];

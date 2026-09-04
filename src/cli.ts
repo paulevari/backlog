@@ -24,6 +24,7 @@ import { DEFAULT_DIRECTORIES, DEFAULT_FILES, DEFAULT_STATUSES } from "./constant
 import { type DuplicateRepairPlan, findLocalDuplicateTaskIds } from "./core/duplicate-task-repair.ts";
 import { initializeProject } from "./core/init.ts";
 import { buildMilestoneBuckets, collectArchivedMilestoneKeys, milestoneKey } from "./core/milestones.ts";
+import { RIPPLE_STATUSES } from "./core/ripple-issues.ts";
 import { printJson, searchJson, taskListJson, taskViewJson } from "./formatters/json-output.ts";
 import { formatTaskPlainText } from "./formatters/task-plain-text.ts";
 import {
@@ -4161,7 +4162,8 @@ function addBoardOptions(cmd: Command) {
 		.option("-l, --layout <layout>", "board layout (horizontal|vertical)", "horizontal")
 		.option("--vertical", "use vertical layout (shortcut for --layout vertical)")
 		.option("-m, --milestones", "group tasks by milestone")
-		.option("--include-drafts", "show drafts in a leading Draft column");
+		.option("--include-drafts", "show drafts in a leading Draft column")
+		.option("--ripple", "show Ripple issues (read-only, auto-refresh) using ripple_command from config.yml");
 }
 
 async function includeDraftsForBoard(
@@ -4182,15 +4184,23 @@ async function handleBoardView(
 		vertical?: boolean;
 		milestones?: boolean;
 		includeDrafts?: boolean;
+		ripple?: boolean;
 	},
 	command?: Command,
 ) {
 	const includeDrafts = Boolean(options.includeDrafts ?? command?.optsWithGlobals().includeDrafts);
 	const cwd = await requireProjectRoot();
-	const core = new Core(cwd);
+	const rippleCommand = options.ripple
+		? (await new Core(cwd).filesystem.loadConfig())?.rippleCommand?.trim()
+		: undefined;
+	if (options.ripple && !rippleCommand) {
+		console.error("ripple_command is not set in backlog/config.yml (e.g. ripple_command: 'ssh puddle ripple')");
+		process.exit(1);
+	}
+	const core = new Core(cwd, rippleCommand ? { rippleCommand } : undefined);
 	const config = await core.filesystem.loadConfig();
 
-	const statuses = config?.statuses || [];
+	const statuses = rippleCommand ? RIPPLE_STATUSES : config?.statuses || [];
 
 	// Use unified view for Tab switching support
 	const { runUnifiedView } = await import("./ui/unified-view.ts");

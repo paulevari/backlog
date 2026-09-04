@@ -229,3 +229,49 @@ export function watchTasks(
 		},
 	};
 }
+
+/**
+ * Poll `core.loadTasks()` on an interval and emit incremental updates by diffing
+ * successive snapshots. Used in Ripple mode where tasks come from a CLI, not files.
+ */
+export function pollTasks(
+	core: Core,
+	callbacks: TaskWatcherCallbacks,
+	initialTasks: readonly Task[] = [],
+	intervalMs = 30_000,
+): { stop: () => void } {
+	let previous = new Map(initialTasks.map((task) => [task.id, task]));
+	let polling = false;
+	let stopped = false;
+
+	const poll = async () => {
+		if (polling) return;
+		polling = true;
+		try {
+			const loaded = await core.loadTasks();
+			if (stopped) return;
+			const next = new Map(loaded.map((task) => [task.id, task]));
+			for (const [id, task] of next) {
+				const before = previous.get(id);
+				if (!before) await callbacks.onTaskAdded?.(task);
+				else if (taskSignature(before) !== taskSignature(task)) await callbacks.onTaskChanged?.(task);
+			}
+			for (const id of previous.keys()) {
+				if (!next.has(id)) await callbacks.onTaskRemoved?.(id);
+			}
+			previous = next;
+		} catch (error) {
+			if (process.env.DEBUG) console.warn("Ripple poll failed", error);
+		} finally {
+			polling = false;
+		}
+	};
+
+	const timer = setInterval(() => void poll(), intervalMs);
+	return {
+		stop: () => {
+			stopped = true;
+			clearInterval(timer);
+		},
+	};
+}

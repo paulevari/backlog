@@ -10,7 +10,7 @@ import { formatDuplicateTaskIdSummary } from "../utils/duplicate-detection.ts";
 import { collectAvailableLabels } from "../utils/label-filter.ts";
 import { hasAnyPrefix } from "../utils/prefix-config.ts";
 import { applySharedTaskFilters, createTaskSearchIndex, type LabelMatchMode } from "../utils/task-search.ts";
-import { type TaskWatcherCallbacks, watchTasks } from "../utils/task-watcher.ts";
+import { pollTasks, type TaskWatcherCallbacks, watchTasks } from "../utils/task-watcher.ts";
 import { viewAnnieBrowser } from "./annie-browser.ts";
 import { renderBoardTui } from "./board.ts";
 import { createLoadingScreen } from "./loading.ts";
@@ -355,12 +355,14 @@ export async function runUnifiedView(options: UnifiedViewOptions): Promise<void>
 			core: options.core,
 			initialState,
 		});
-		const watcher = watchTasks(options.core, taskUpdateCallbacks, baseTasks);
+		const watcher = options.core.rippleMode
+			? pollTasks(options.core, taskUpdateCallbacks, baseTasks)
+			: watchTasks(options.core, taskUpdateCallbacks, baseTasks);
 		process.on("exit", () => watcher.stop());
 
 		const configWatcher = watchConfig(options.core, {
 			onConfigChanged: (config) => {
-				kanbanStatuses = config?.statuses ?? [];
+				if (!options.core.rippleMode) kanbanStatuses = config?.statuses ?? [];
 				configuredLabels = config?.labels ?? [];
 				emitBoardUpdate();
 				emitTaskListUpdate();

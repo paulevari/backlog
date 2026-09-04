@@ -118,6 +118,7 @@ import {
 import { isDoneStatus } from "./milestones.ts";
 import { migrateDraftPrefixes, needsDraftPrefixMigration } from "./prefix-migration.ts";
 import { calculateNewOrdinal, DEFAULT_ORDINAL_STEP, resolveOrdinalConflicts } from "./reorder.ts";
+import { loadRippleIssues } from "./ripple-issues.ts";
 import { SearchService } from "./search-service.ts";
 import {
 	type BranchTaskStateEntry,
@@ -363,6 +364,7 @@ export class Core {
 	private activeBranchRefreshPromise: Promise<void> | null = null;
 	private readonly taskNotifier: TaskLifecycleNotifier;
 	private readonly familyCompletionFaultInjector?: OrchestrationFamilyFaultInjector;
+	private readonly rippleCommand?: string;
 
 	constructor(
 		projectRoot: string,
@@ -370,6 +372,8 @@ export class Core {
 			enableWatchers?: boolean;
 			taskNotifier?: TaskLifecycleNotifier;
 			familyCompletionFaultInjector?: OrchestrationFamilyFaultInjector;
+			/** When set, tasks are read-only Ripple issues loaded via this command prefix. */
+			rippleCommand?: string;
 		},
 	) {
 		this.fs = new FileSystem(projectRoot);
@@ -379,7 +383,18 @@ export class Core {
 		this.enableWatchers = options?.enableWatchers ?? false;
 		this.taskNotifier = options?.taskNotifier ?? getTaskLifecycleNotifier();
 		this.familyCompletionFaultInjector = options?.familyCompletionFaultInjector;
+		this.rippleCommand = options?.rippleCommand;
 		// Note: Config is loaded lazily when needed since constructor can't be async
+	}
+
+	get rippleMode(): boolean {
+		return Boolean(this.rippleCommand);
+	}
+
+	private assertWritable(): void {
+		if (this.rippleMode) {
+			throw new Error("Ripple issues are read-only");
+		}
 	}
 
 	async withCreateLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -1694,6 +1709,7 @@ export class Core {
 	}
 
 	async createTask(task: Task, autoCommit?: boolean): Promise<string> {
+		this.assertWritable();
 		if (!task.status) {
 			const config = await this.fs.loadConfig();
 			task.status = config?.defaultStatus || FALLBACK_STATUS;
@@ -1715,6 +1731,7 @@ export class Core {
 	}
 
 	async updateTask(task: Task, autoCommit?: boolean): Promise<void> {
+		this.assertWritable();
 		const outcome = await this.withCreateLock(async () => {
 			const persisted = await this.fs.loadTask(task.id);
 			if (persisted) this.assertGenericTaskMutationAllowed(persisted);
@@ -4226,6 +4243,7 @@ export class Core {
 		autoCommit?: boolean;
 		defaultStep?: number;
 	}): Promise<{ updatedTask: Task; changedTasks: Task[] }> {
+		this.assertWritable();
 		const taskId = normalizeTaskId(String(params.taskId || "").trim());
 		const targetStatus = String(params.targetStatus || "").trim();
 		const orderedTaskIds = params.orderedTaskIds.map((id) => normalizeTaskId(String(id || "").trim())).filter(Boolean);
@@ -4354,6 +4372,7 @@ export class Core {
 	}
 
 	async archiveTask(taskId: string, autoCommit?: boolean): Promise<boolean> {
+		this.assertWritable();
 		const archived = await this.withCreateLock(async () => {
 			const task = await this.fs.loadTask(taskId);
 			if (!task) return null;
@@ -4460,6 +4479,7 @@ export class Core {
 	}
 
 	async completeTask(taskId: string, autoCommit?: boolean): Promise<boolean> {
+		this.assertWritable();
 		const completed = await this.withCreateLock(async () => {
 			const task = await this.fs.loadTask(taskId);
 			if (!task) return null;
@@ -4873,6 +4893,7 @@ export class Core {
 	 * @param screen - Optional blessed screen to suspend (for TUI contexts)
 	 */
 	async editTaskInTui(taskId: string, screen: BlessedScreen, selectedTask?: Task): Promise<TuiTaskEditResult> {
+		this.assertWritable();
 		const contextualTask = selectedTask && taskIdsEqual(selectedTask.id, taskId) ? selectedTask : undefined;
 
 		if (contextualTask && (!isLocalEditableTask(contextualTask) || contextualTask.branch)) {
@@ -5081,6 +5102,10 @@ export class Core {
 		abortSignal?: AbortSignal,
 		options?: { includeCompleted?: boolean },
 	): Promise<Task[]> {
+		if (this.rippleCommand) {
+			progressCallback?.("Loading Ripple issues...");
+			return await loadRippleIssues(this.rippleCommand);
+		}
 		return await this.loadTasksWithStableBranchSnapshot(progressCallback, abortSignal, options, 0);
 	}
 

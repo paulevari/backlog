@@ -117,7 +117,7 @@ export interface Task {
 	filePath?: string;
 	// Metadata fields
 	lastModified?: Date;
-	source?: "local" | "remote" | "completed" | "local-branch";
+	source?: "local" | "remote" | "completed" | "local-branch" | "ripple";
 	/** Optional per-task callback command to run on status change (overrides global config) */
 	onStatusChange?: string;
 	/** Monotonic persisted revision used by guarded orchestration mutations. */
@@ -475,6 +475,8 @@ export interface BacklogConfig {
 	zeroPaddedIds?: number;
 	includeDateTimeInDates?: boolean; // Whether to include time in new dates
 	bypassGitHooks?: boolean;
+	/** Command prefix for the Ripple CLI (e.g. "ssh puddle ripple"); enables `backlog board --ripple`. */
+	rippleCommand?: string;
 	checkActiveBranches?: boolean; // Check task states across active branches (default: true)
 	activeBranchDays?: number; // How many days a branch is considered active (default: 30)
 	teamLeadEnabled?: boolean;
