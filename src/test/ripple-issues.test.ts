@@ -127,7 +127,7 @@ describe("loadRippleIssues", () => {
 			const stub = await writeStub(
 				dir,
 				`case "$1 $2" in
-  "issue list") printf '%s' '${JSON.stringify({ issues, total: 5 })}' ;;
+  "issue list") case "$*" in *"--status backlog"*) printf '%s' '${JSON.stringify({ issues, total: 5 })}' ;; *) printf '%s' '{"issues":[],"total":0,"has_more":false}' ;; esac ;;
   "agent list") printf '%s' '${JSON.stringify([{ id: AGENT_ID, name: "tech-lead" }])}' ;;
   "squad list") printf '%s' '${JSON.stringify([{ id: SQUAD_ID, name: "delivery" }])}' ;;
   *) echo "unexpected: $*" >&2; exit 9 ;;
@@ -137,6 +137,28 @@ esac`,
 			expect(tasks.map((t) => t.id)).toEqual(["PUD-11", "PUD-10", "PUD-12"]);
 			expect(tasks.find((t) => t.id === "PUD-10")?.assignee).toEqual(["tech-lead"]);
 			expect(tasks.find((t) => t.id === "PUD-11")?.assignee).toEqual(["delivery"]);
+		} finally {
+			await safeCleanup(dir);
+		}
+	});
+
+	it("queries each open status separately and follows has_more pagination", async () => {
+		const dir = createUniqueTestDir("ripple-stub");
+		try {
+			// Server caps pages at 100; the stub caps at 1 to force pagination for "backlog".
+			const stub = await writeStub(
+				dir,
+				`case "$*" in
+  *"--status backlog"*"--offset 1"*) printf '%s' '{"issues":[{"id":"b2","identifier":"PUD-2","title":"B2","status":"backlog","priority":"low","position":2,"created_at":"2026-09-01T00:00:00Z"}],"total":2,"has_more":false}' ;;
+  *"--status backlog"*) printf '%s' '{"issues":[{"id":"b1","identifier":"PUD-1","title":"B1","status":"backlog","priority":"low","position":1,"created_at":"2026-09-01T00:00:00Z"}],"total":2,"has_more":true}' ;;
+  *"--status todo"*) printf '%s' '{"issues":[{"id":"t1","identifier":"PUD-3","title":"T1","status":"todo","priority":"low","position":1,"created_at":"2026-09-01T00:00:00Z"}],"total":1,"has_more":false}' ;;
+  *"--status "*) printf '%s' '{"issues":[],"total":0,"has_more":false}' ;;
+  "issue list"*) echo "unfiltered issue list must not be used" >&2; exit 9 ;;
+  *) echo '[]' ;;
+esac`,
+			);
+			const tasks = await loadRippleIssues(stub);
+			expect(tasks.map((t) => t.id).sort()).toEqual(["PUD-1", "PUD-2", "PUD-3"]);
 		} finally {
 			await safeCleanup(dir);
 		}
@@ -158,7 +180,7 @@ esac`,
 			const stub = await writeStub(
 				dir,
 				`case "$1 $2" in
-  "issue list") printf '%s' '${JSON.stringify({ issues, total: 5 })}' ;;
+  "issue list") case "$*" in *"--status backlog"*) printf '%s' '${JSON.stringify({ issues, total: 5 })}' ;; *) printf '%s' '{"issues":[],"total":0,"has_more":false}' ;; esac ;;
   *) exit 1 ;;
 esac`,
 			);

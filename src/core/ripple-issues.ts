@@ -71,13 +71,28 @@ async function loadNames(prefix: string, args: string): Promise<Array<{ id: stri
 	}
 }
 
+/** The Ripple server caps `issue list` pages at 100, so each status is fetched page by page. */
+const PAGE_SIZE = 100;
+
+async function loadIssuesWithStatus(prefix: string, status: string): Promise<RippleIssue[]> {
+	const issues: RippleIssue[] = [];
+	for (let offset = 0; ; offset += PAGE_SIZE) {
+		const page = await runRipple<{ issues?: RippleIssue[]; has_more?: boolean }>(
+			prefix,
+			`issue list --output json --status ${status} --limit ${PAGE_SIZE} --offset ${offset}`,
+		);
+		issues.push(...(page.issues ?? []));
+		if (!page.has_more || (page.issues?.length ?? 0) === 0) return issues;
+	}
+}
+
 /** Load open Ripple issues via the configured `ripple_command` prefix, resolving agent/squad assignee names. */
 export async function loadRippleIssues(rippleCommand: string): Promise<Task[]> {
-	const [issueList, agents, squads] = await Promise.all([
-		runRipple<{ issues: RippleIssue[] }>(rippleCommand, "issue list --output json --limit 500"),
+	const [issuesByStatus, agents, squads] = await Promise.all([
+		Promise.all(RIPPLE_STATUSES.map((status) => loadIssuesWithStatus(rippleCommand, status))),
 		loadNames(rippleCommand, "agent list --output json"),
 		loadNames(rippleCommand, "squad list --output json"),
 	]);
 	const names = new Map([...agents, ...squads].map((entity) => [entity.id, entity.name]));
-	return mapRippleIssues(issueList.issues ?? [], names);
+	return mapRippleIssues(issuesByStatus.flat(), names);
 }

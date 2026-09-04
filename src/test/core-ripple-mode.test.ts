@@ -29,7 +29,7 @@ describe("Core ripple mode", () => {
 		stub = join(TEST_DIR, "ripple-stub.sh");
 		await writeFile(
 			stub,
-			`#!/bin/sh\ncase "$1 $2" in\n "issue list") printf '%s' '${JSON.stringify(issueList)}' ;;\n *) echo '[]' ;;\nesac\n`,
+			`#!/bin/sh\ncase "$1 $2" in\n "issue list") case "$*" in *"--status todo"*) printf '%s' '${JSON.stringify(issueList)}' ;; *) printf '%s' '{"issues":[],"total":0,"has_more":false}' ;; esac ;;\n *) echo '[]' ;;\nesac\n`,
 		);
 		await chmod(stub, 0o755);
 		const seed = new Core(TEST_DIR);
